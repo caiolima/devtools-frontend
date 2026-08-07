@@ -398,6 +398,29 @@ export class CompilerScriptMapping implements DebuggerSourceMapping {
         }
         mappedLines.add(entry.sourceLineNumber);
       }
+
+      // A range mapping covers every line of the original source it spans, not just the one
+      // its entry starts on.
+      const ranges = sourceMap.rangeMappedSourceRanges(uiSourceCode.url());
+      if (ranges.length === 0) {
+        continue;
+      }
+      // A range mapping that reaches until the end of the generated code reaches until the
+      // end of the original source, which we only know if the source map embeds it.
+      const content = sourceMap.embeddedContentByURL(uiSourceCode.url());
+      const lastLineOfSource = content !== null ? new TextUtils.Text.Text(content).lineCount() - 1 : null;
+      for (const {startLine, endLine, endColumn} of ranges) {
+        let lastLine = endLine;
+        if (lastLine === SDK.SourceMap.UNBOUNDED) {
+          lastLine = lastLineOfSource ?? startLine;
+        } else if (endColumn === 0) {
+          // The end is exclusive, so a range ending in column 0 stops short of its end line.
+          lastLine -= 1;
+        }
+        for (let line = startLine; line <= lastLine; ++line) {
+          mappedLines.add(line);
+        }
+      }
     }
     return mappedLines;
   }

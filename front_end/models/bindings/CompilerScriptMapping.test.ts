@@ -384,6 +384,91 @@ describe('CompilerScriptMapping', () => {
     assert.deepEqual(mappedLines, new Set([0, 2, 4]));
   });
 
+  describe('with a range mapping', () => {
+    const sourceRoot = 'http://example.com';
+
+    /**
+     * A range mapping starting at 0:0 and reaching until the mapping at generated 3:0, so it
+     * covers the original lines 0 through 2 character by character.
+     */
+    async function addScriptWithRangeMapping(target: SDK.Target.Target) {
+      const scriptInfo = {
+        url: `${sourceRoot}/test.out.js`,
+        content: 'const a = 1;\nconst b = 2;\nconst c = 3;\nf(a, b, c);\n',
+      };
+      const sourceMapInfo = {
+        url: `${scriptInfo.url}.map`,
+        content: encodeSourceMap(['0:0 => test.ts:0:0 (range)', '3:0 => test.ts:9:0'], sourceRoot),
+      };
+      const [uiSourceCode, script] = await Promise.all([
+        waitForUISourceCodeAdded(`${sourceRoot}/test.ts`, target),
+        backend.addScript(target, scriptInfo, sourceMapInfo),
+      ]);
+      return {uiSourceCode, script};
+    }
+
+    it('maps a covered line to the matching raw location', async () => {
+      const target = backend.createTarget();
+      const {uiSourceCode, script} = await addScriptWithRangeMapping(target);
+
+      assert.deepEqual(
+          await debuggerWorkspaceBinding.uiLocationToRawLocations(uiSourceCode, 1, 0),
+          [script.debuggerModel.createRawLocation(script, 1, 0)]);
+      assert.deepEqual(
+          await debuggerWorkspaceBinding.uiLocationToRawLocations(uiSourceCode, 2, 3),
+          [script.debuggerModel.createRawLocation(script, 2, 3)]);
+    });
+
+    it('still maps the regular mapping that follows it', async () => {
+      const target = backend.createTarget();
+      const {uiSourceCode, script} = await addScriptWithRangeMapping(target);
+
+      assert.deepEqual(
+          await debuggerWorkspaceBinding.uiLocationToRawLocations(uiSourceCode, 9, 0),
+          [script.debuggerModel.createRawLocation(script, 3, 0)]);
+    });
+
+    it('reports every covered line as source-mapped', async () => {
+      const target = backend.createTarget();
+      const {uiSourceCode} = await addScriptWithRangeMapping(target);
+
+      assert.deepEqual(await debuggerWorkspaceBinding.getMappedLines(uiSourceCode), new Set([0, 1, 2, 9]));
+    });
+
+    it('reports the rest of the original source as mapped for a trailing range mapping', async () => {
+      const target = backend.createTarget();
+      const scriptInfo = {url: `${sourceRoot}/trailing.out.js`, content: 'a;\nb;\nc;\n'};
+      const sourceMapInfo = {
+        url: `${scriptInfo.url}.map`,
+        content: {
+          // A range mapping with no following entry has no known end, so how far it reaches
+          // can only be told from the embedded original source.
+          ...encodeSourceMap(['0:0 => trailing.ts:1:0 (range)'], sourceRoot),
+          sourcesContent: ['line0\nline1\nline2\nline3\n'],
+        },
+      };
+      const [uiSourceCode] = await Promise.all([
+        waitForUISourceCodeAdded(`${sourceRoot}/trailing.ts`, target),
+        backend.addScript(target, scriptInfo, sourceMapInfo),
+      ]);
+
+      assert.deepEqual(await debuggerWorkspaceBinding.getMappedLines(uiSourceCode), new Set([1, 2, 3, 4]));
+    });
+
+    it('maps a covered ui location range to the matching raw location range', async () => {
+      const target = backend.createTarget();
+      const {uiSourceCode, script} = await addScriptWithRangeMapping(target);
+
+      const ranges = await debuggerWorkspaceBinding.uiLocationRangeToRawLocationRanges(
+          uiSourceCode, new TextUtils.TextRange.TextRange(1, 0, 1, 2));
+
+      assert.deepEqual(ranges, [{
+                         start: script.debuggerModel.createRawLocation(script, 1, 0),
+                         end: script.debuggerModel.createRawLocation(script, 1, 2),
+                       }]);
+    });
+  });
+
   it('correctly maps to multiple raw locations if the source map has multiple entries for a single source line/column',
      async () => {
        const target = backend.createTarget();
