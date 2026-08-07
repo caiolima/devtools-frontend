@@ -1665,6 +1665,166 @@ describeWithEnvironment('SourceMap', () => {
       });
     });
 
+    describe('reverse lookups', () => {
+      /*
+       * A range mapping starting at generated 0:4, mapping to original 1:2, and ending where
+       * the next mapping starts at generated 2:6. It therefore covers the original text from
+       * 1:2 up to (but excluding) 3:6.
+       */
+      function createSourceMapWithRangeOverLines() {
+        return createSourceMap(encodeSourceMap([
+          '0:4 => example.js:1:2 (range)',
+          '2:6 => example.js:9:0',
+        ]));
+      }
+
+      describe('rangeMappedSourceRanges', () => {
+        it('reports the original text a range mapping covers', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assert.deepEqual(
+              sourceMap.rangeMappedSourceRanges(sourceUrlExample),
+              [new TextUtils.TextRange.TextRange(1, 2, 3, 6)]);
+        });
+
+        it('reports an unbounded end for a trailing range mapping', () => {
+          const sourceMap = createSourceMap(encodeSourceMap(['0:0 => example.js:3:1 (range)']));
+
+          assert.deepEqual(
+              sourceMap.rangeMappedSourceRanges(sourceUrlExample),
+              [new TextUtils.TextRange.TextRange(3, 1, 2 ** 31 - 1, 2 ** 31 - 1)]);
+        });
+
+        it('is empty for sources without range mappings', () => {
+          const sourceMap = createSourceMap(encodeSourceMap(['0:0 => example.js:0:0']));
+
+          assert.isEmpty(sourceMap.rangeMappedSourceRanges(sourceUrlExample));
+          assert.isEmpty(sourceMap.rangeMappedSourceRanges(sourceUrlOther));
+        });
+      });
+
+      describe('sourceLineMapping', () => {
+        it('resolves a line in the middle of a range mapping', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assertReverseMapping(sourceMap.sourceLineMapping(sourceUrlExample, 2, 0), 1, 0);
+          assertReverseMapping(sourceMap.sourceLineMapping(sourceUrlExample, 2, 4), 1, 4);
+        });
+
+        it('resolves a column in the middle of the first line of a range mapping', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assertReverseMapping(sourceMap.sourceLineMapping(sourceUrlExample, 1, 5), 0, 7);
+        });
+
+        it('resolves the last line a range mapping reaches into', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assertReverseMapping(sourceMap.sourceLineMapping(sourceUrlExample, 3, 5), 2, 5);
+        });
+
+        it('reports the covered position as the original position', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assertMapping(sourceMap.sourceLineMapping(sourceUrlExample, 2, 4), 0, 'example.js', 2, 4);
+        });
+
+        it('snaps forward to the start of a range mapping', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assertReverseMapping(sourceMap.sourceLineMapping(sourceUrlExample, 1, 0), 0, 4);
+        });
+
+        it('returns null for lines beyond the range mapping', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assert.isNull(sourceMap.sourceLineMapping(sourceUrlExample, 4, 0));
+          assert.isNull(sourceMap.sourceLineMapping(sourceUrlExample, 0, 0));
+        });
+
+        it('still resolves regular mappings', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assertReverseMapping(sourceMap.sourceLineMapping(sourceUrlExample, 9, 0), 2, 6);
+        });
+      });
+
+      describe('findReverseEntries', () => {
+        it('interpolates a position covered by a range mapping', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          const entries = sourceMap.findReverseEntries(sourceUrlExample, 2, 0);
+
+          assert.deepEqual(entries.map(entry => [entry.lineNumber, entry.columnNumber]), [[1, 0]]);
+        });
+
+        it('returns the original entry for the exact start of a range mapping', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          const entries = sourceMap.findReverseEntries(sourceUrlExample, 1, 2);
+
+          assert.deepEqual(entries.map(entry => [entry.lineNumber, entry.columnNumber]), [[0, 4]]);
+        });
+
+        it('reports every range mapping that covers the position', () => {
+          // Both range mappings cover the original text from 0:0 up to 0:10, as happens when
+          // a bundler duplicates code.
+          const sourceMap = createSourceMap(encodeSourceMap([
+            '0:0 => example.js:0:0 (range)',
+            '0:10 => example.js:0:0 (range)',
+            '0:20 => example.js:5:0',
+          ]));
+
+          const entries = sourceMap.findReverseEntries(sourceUrlExample, 0, 3);
+
+          assert.deepEqual(entries.map(entry => [entry.lineNumber, entry.columnNumber]), [[0, 3], [0, 13]]);
+        });
+
+        it('does not report positions that merely precede the covered position', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          const entries = sourceMap.findReverseEntries(sourceUrlExample, 2, 0);
+
+          assert.isFalse(entries.some(entry => entry.lineNumber === 0 && entry.columnNumber === 4));
+        });
+      });
+
+      describe('findReverseRanges', () => {
+        it('reports a single character for a position covered by a range mapping', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assert.deepEqual(
+              sourceMap.findReverseRanges(sourceUrlExample, 2, 0), [new TextUtils.TextRange.TextRange(1, 0, 1, 1)]);
+        });
+
+        it('still reports the full span of regular mappings', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assert.deepEqual(
+              sourceMap.findReverseRanges(sourceUrlExample, 9, 0),
+              [new TextUtils.TextRange.TextRange(2, 6, 2 ** 31 - 1, 2 ** 31 - 1)]);
+        });
+      });
+
+      describe('reverseMapTextRanges', () => {
+        it('maps the intersection with a range mapping', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assert.deepEqual(
+              sourceMap.reverseMapTextRanges(sourceUrlExample, new TextUtils.TextRange.TextRange(2, 0, 2, 3)),
+              [new TextUtils.TextRange.TextRange(1, 0, 1, 3)]);
+        });
+
+        it('clips the queried range to what the range mapping covers', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assert.deepEqual(
+              sourceMap.reverseMapTextRanges(sourceUrlExample, new TextUtils.TextRange.TextRange(0, 0, 2, 1)),
+              [new TextUtils.TextRange.TextRange(0, 4, 1, 1)]);
+        });
+      });
+    });
+
     describe('malformed input', () => {
       function assertSourceMapIsInvalid(payload: SDK.SourceMap.SourceMapV3Object) {
         const error = sinon.stub(console, 'error');
