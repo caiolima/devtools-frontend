@@ -102,6 +102,51 @@ describeWithEnvironment('SourceMap', () => {
         assert.strictEqual(iter.peekVLQ(), expectedOutput, `'${input}' must result in '${expectedOutput}'`);
       }
     });
+
+    it('decodes unsigned VLQ numbers without interpreting a sign bit', () => {
+      const cases: Array<[string, number]> = [
+        ['A', 0],
+        ['B', 1],
+        ['C', 2],
+        ['f', 31],
+      ];
+
+      for (const [input, expectedOutput] of cases) {
+        const iter = new SDK.SourceMap.TokenIterator(input);
+        assert.strictEqual(iter.nextUnsignedVLQ(), expectedOutput, `'${input}' must result in '${expectedOutput}'`);
+      }
+    });
+
+    it('decodes unsigned VLQ numbers that use the continuation bit', () => {
+      const cases: Array<[string, number]> = [
+        ['gB', 32],
+        ['gC', 64],
+        ['ggggggB', 1 << 30],
+      ];
+
+      for (const [input, expectedOutput] of cases) {
+        const iter = new SDK.SourceMap.TokenIterator(input);
+        assert.strictEqual(iter.nextUnsignedVLQ(), expectedOutput, `'${input}' must result in '${expectedOutput}'`);
+      }
+    });
+
+    it('decodes consecutive unsigned VLQ numbers', () => {
+      const iter = new SDK.SourceMap.TokenIterator('AgCF');
+      assert.strictEqual(iter.nextUnsignedVLQ(), 0);
+      assert.strictEqual(iter.nextUnsignedVLQ(), 64);
+      assert.strictEqual(iter.nextUnsignedVLQ(), 5);
+      assert.isFalse(iter.hasNext());
+    });
+
+    it('throws when an unsigned VLQ number does not fit into 32 bits', () => {
+      const iter = new SDK.SourceMap.TokenIterator('gggggggB');
+      assert.throws(() => iter.nextUnsignedVLQ(), /VLQ/);
+    });
+
+    it('throws when an unsigned VLQ number is truncated', () => {
+      const iter = new SDK.SourceMap.TokenIterator('g');
+      assert.throws(() => iter.nextUnsignedVLQ(), /end of input/);
+    });
   });
 
   function assertMapping(
@@ -1394,5 +1439,494 @@ describeWithEnvironment('SourceMap', () => {
 
     assert.isTrue(sourceMap.hasScopeInfo());
     sinon.assert.calledOnceWithExactly(scopeTreeStub, 'function f() { console.log("hello"); }', 'script');
+  });
+
+  describe('rangeMappings', () => {
+    function createSourceMap(payload: SDK.SourceMap.SourceMapV3, console = new Common.Console.Console()) {
+      return new SDK.SourceMap.SourceMap(compiledUrl, sourceMapJsonUrl, payload, console);
+    }
+
+    describe('decoding', () => {
+      it('does not mark any entry as a range mapping without the field', () => {
+        const sourceMap = createSourceMap(encodeSourceMap(['0:0 => example.js:0:0', '0:5 => example.js:0:5']));
+
+        assert.deepEqual(sourceMap.mappings().map(entry => entry.isRangeMapping), [false, false]);
+      });
+
+      it('marks the entries referenced by the field', () => {
+        const sourceMap = createSourceMap(encodeSourceMap([
+          '0:0 => example.js:0:0 (range)',
+          '0:5 => example.js:0:5',
+          '1:0 => example.js:1:0 (range)',
+        ]));
+
+        assert.deepEqual(sourceMap.mappings().map(entry => entry.isRangeMapping), [true, false, true]);
+      });
+
+      it('keeps the remaining entry data intact', () => {
+        const sourceMap = createSourceMap(encodeSourceMap(['0:4 => example.js:2:7@foo (range)']));
+
+        const [entry] = sourceMap.mappings();
+        assert.strictEqual(entry.lineNumber, 0);
+        assert.strictEqual(entry.columnNumber, 4);
+        assert.strictEqual(entry.sourceURL, sourceUrlExample);
+        assert.strictEqual(entry.sourceLineNumber, 2);
+        assert.strictEqual(entry.sourceColumnNumber, 7);
+        assert.strictEqual(entry.name, 'foo');
+        assert.isTrue(entry.isRangeMapping);
+      });
+
+      it('marks the right entry when the mappings are not sorted', () => {
+        // The spec doesn't require `mappings` to be sorted, and `rangeMappings` addresses
+        // entries in the order they are encoded, not in the order they end up in. Here the
+        // second mapping on line 0 starts at a *lower* column than the first, so the marked
+        // entry moves to the back once the mappings are sorted.
+        //   [4, 0, 0, 0]  => 0:4 => example.js:0:0
+        //   [-1, 0, 1, 0] => 0:3 => example.js:1:0
+        const sourceMap = createSourceMap({
+          version: 3,
+          sources: ['example.js'],
+          names: [],
+          mappings: 'IAAA,DACA',
+          rangeMappings: 'A',
+        });
+
+        assert.deepEqual(
+            sourceMap.mappings().map(entry => [entry.columnNumber, entry.isRangeMapping]), [[3, false], [4, true]]);
+        assertMapping(sourceMap.findEntry(0, 6), 0, 'example.js', 0, 2);
+        assertMapping(sourceMap.findEntry(0, 3), 0, 'example.js', 1, 0);
+      });
+
+      it('marks entries of every section of an index map', () => {
+        const sourceMap = createSourceMap({
+          version: 3,
+          sections: [
+            {offset: {line: 0, column: 0}, map: encodeSourceMap(['0:0 => example.js:0:0 (range)'])},
+            {offset: {line: 2, column: 0}, map: encodeSourceMap(['0:0 => other.js:0:0 (range)'])},
+          ],
+        });
+
+        assert.deepEqual(
+            sourceMap.mappings().map(entry => [entry.lineNumber, entry.sourceURL, entry.isRangeMapping]),
+            [[0, sourceUrlExample, true], [2, sourceUrlOther, true]]);
+      });
+    });
+
+    describe('findEntry', () => {
+      it('interpolates positions inside the range along the line', () => {
+        /*
+              example.js:
+              0         1
+              01234567890123456
+                        ^ the range mapping starts here
+              ----------------------------------------
+              compiled.js:
+              0
+              0123456789
+                ^     ^ and ends where the next mapping starts
+        */
+        const sourceMap = createSourceMap(encodeSourceMap([
+          '0:2 => example.js:0:10 (range)',
+          '0:8 => example.js:5:0',
+        ]));
+
+        assertMapping(sourceMap.findEntry(0, 2), 0, 'example.js', 0, 10);
+        assertMapping(sourceMap.findEntry(0, 3), 0, 'example.js', 0, 11);
+        assertMapping(sourceMap.findEntry(0, 7), 0, 'example.js', 0, 15);
+        // The range ends where the next mapping begins.
+        assertMapping(sourceMap.findEntry(0, 8), 0, 'example.js', 5, 0);
+      });
+
+      it('interpolates positions inside the range across newlines', () => {
+        const sourceMap = createSourceMap(encodeSourceMap([
+          '0:4 => example.js:1:2 (range)',
+          '2:6 => example.js:9:0',
+        ]));
+
+        assertMapping(sourceMap.findEntry(0, 4), 0, 'example.js', 1, 2);
+        assertMapping(sourceMap.findEntry(0, 9), 0, 'example.js', 1, 7);
+        // Past a newline both sides restart at column 0, so the column carries over as is.
+        assertMapping(sourceMap.findEntry(1, 0), 0, 'example.js', 2, 0);
+        assertMapping(sourceMap.findEntry(1, 5), 0, 'example.js', 2, 5);
+        assertMapping(sourceMap.findEntry(2, 5), 0, 'example.js', 3, 5);
+        assertMapping(sourceMap.findEntry(2, 6), 0, 'example.js', 9, 0);
+      });
+
+      it('extends a trailing range mapping indefinitely', () => {
+        const sourceMap = createSourceMap(encodeSourceMap(['0:0 => example.js:0:0 (range)']));
+
+        assertMapping(sourceMap.findEntry(5, 3), 0, 'example.js', 5, 3);
+      });
+
+      it('reports the queried position as the generated position', () => {
+        const sourceMap = createSourceMap(encodeSourceMap([
+          '0:2 => example.js:0:10 (range)',
+          '0:8 => example.js:5:0',
+        ]));
+
+        assertReverseMapping(sourceMap.findEntry(0, 5), 0, 5);
+      });
+
+      it('keeps collapsing positions inside a regular mapping', () => {
+        const sourceMap = createSourceMap(encodeSourceMap([
+          '0:2 => example.js:0:10',
+          '0:8 => example.js:5:0',
+        ]));
+
+        assertMapping(sourceMap.findEntry(0, 5), 0, 'example.js', 0, 10);
+        assertReverseMapping(sourceMap.findEntry(0, 5), 0, 2);
+      });
+
+      it('returns null for positions preceding all mappings', () => {
+        const sourceMap = createSourceMap(encodeSourceMap(['0:2 => example.js:0:10 (range)']));
+
+        assert.isNull(sourceMap.findEntry(0, 1));
+      });
+
+      it('only reports the name at the exact start of the range', () => {
+        const sourceMap = createSourceMap(encodeSourceMap([
+          '0:0 => example.js:0:0@foo (range)',
+          '0:10 => example.js:5:0',
+        ]));
+
+        assert.strictEqual(sourceMap.findEntry(0, 0)?.name, 'foo');
+        assert.isUndefined(sourceMap.findEntry(0, 3)?.name);
+      });
+
+      it('does not make interpolated positions look exact', () => {
+        const sourceMap = createSourceMap(encodeSourceMap([
+          '0:2 => example.js:0:10 (range)',
+          '0:8 => example.js:5:0',
+        ]));
+
+        assert.isNotNull(sourceMap.findEntryExact(0, 2));
+        assert.isNull(sourceMap.findEntryExact(0, 3));
+        assert.isNull(sourceMap.findEntryExact(0, 7));
+      });
+    });
+
+    describe('findEntryRanges', () => {
+      it('maps the generated range onto the matching original range', () => {
+        const sourceMap = createSourceMap(encodeSourceMap([
+          '0:2 => example.js:0:10 (range)',
+          '0:8 => example.js:5:0',
+        ]));
+
+        const ranges = sourceMap.findEntryRanges(0, 4);
+
+        assert.exists(ranges);
+        assert.deepEqual(ranges.range, new TextUtils.TextRange.TextRange(0, 2, 0, 8));
+        assert.deepEqual(ranges.sourceRange, new TextUtils.TextRange.TextRange(0, 10, 0, 16));
+        assert.strictEqual(ranges.sourceURL, sourceUrlExample);
+      });
+
+      it('maps a generated range that spans newlines', () => {
+        const sourceMap = createSourceMap(encodeSourceMap([
+          '0:4 => example.js:1:2 (range)',
+          '2:6 => example.js:9:0',
+        ]));
+
+        const ranges = sourceMap.findEntryRanges(1, 0);
+
+        assert.exists(ranges);
+        assert.deepEqual(ranges.range, new TextUtils.TextRange.TextRange(0, 4, 2, 6));
+        assert.deepEqual(ranges.sourceRange, new TextUtils.TextRange.TextRange(1, 2, 3, 6));
+      });
+
+      it('keeps the unbounded end for a trailing range mapping', () => {
+        const sourceMap = createSourceMap(encodeSourceMap(['0:0 => example.js:3:1 (range)']));
+
+        const ranges = sourceMap.findEntryRanges(0, 0);
+
+        assert.exists(ranges);
+        assert.deepEqual(ranges.range, new TextUtils.TextRange.TextRange(0, 0, 2 ** 31 - 1, 2 ** 31 - 1));
+        assert.deepEqual(ranges.sourceRange, new TextUtils.TextRange.TextRange(3, 1, 2 ** 31 - 1, 2 ** 31 - 1));
+      });
+    });
+
+    describe('malformed input', () => {
+      function assertFieldIsIgnored(payload: SDK.SourceMap.SourceMapV3Object) {
+        const console = new Common.Console.Console();
+        const warn = sinon.spy(console, 'warn');
+
+        const sourceMap = createSourceMap(payload, console);
+
+        // The normal mappings keep working, only the range information is dropped.
+        assert.isNotEmpty(sourceMap.mappings());
+        assert.isFalse(sourceMap.mappings().some(entry => entry.isRangeMapping));
+        sinon.assert.calledOnce(warn);
+        assert.include(warn.firstCall.args[0], 'rangeMappings');
+      }
+
+      it('ignores the field when a relative index is zero', () => {
+        const payload = encodeSourceMap(['0:0 => example.js:0:0', '0:5 => example.js:0:5']);
+        assertFieldIsIgnored({...payload, rangeMappings: 'AA'});
+      });
+
+      it('ignores the field when an index is past the end of its line', () => {
+        const payload = encodeSourceMap(['0:0 => example.js:0:0']);
+        assertFieldIsIgnored({...payload, rangeMappings: 'B'});
+      });
+
+      it('ignores the field when a line has more range mappings than mappings', () => {
+        const payload = encodeSourceMap(['0:0 => example.js:0:0']);
+        assertFieldIsIgnored({...payload, rangeMappings: 'B;A;A'});
+      });
+
+      it('ignores the field when it points at a mapping without an original position', () => {
+        const payload = encodeSourceMap(['0:0', '0:5 => example.js:0:5']);
+        assertFieldIsIgnored({...payload, rangeMappings: 'A'});
+      });
+
+      it('ignores the field when an index does not fit into 32 bits', () => {
+        const payload = encodeSourceMap(['0:0 => example.js:0:0']);
+        assertFieldIsIgnored({...payload, rangeMappings: 'gggggggB'});
+      });
+
+      it('ignores the field when it is not a string', () => {
+        const payload = encodeSourceMap(['0:0 => example.js:0:0']);
+        assertFieldIsIgnored({...payload, rangeMappings: {x: 'foo'} as unknown as string});
+      });
+
+      it('does not warn about a source map without the field', () => {
+        const console = new Common.Console.Console();
+        const warn = sinon.spy(console, 'warn');
+
+        createSourceMap(encodeSourceMap(['0:0 => example.js:0:0']), console).mappings();
+
+        sinon.assert.notCalled(warn);
+      });
+
+      it('accepts trailing empty lines beyond the mappings', () => {
+        const console = new Common.Console.Console();
+        const warn = sinon.spy(console, 'warn');
+        const payload = encodeSourceMap(['1:0 => example.js:0:0']);
+
+        const sourceMap = createSourceMap({...payload, rangeMappings: ';A;;;'}, console);
+
+        assert.deepEqual(sourceMap.mappings().map(entry => entry.isRangeMapping), [true]);
+        sinon.assert.notCalled(warn);
+      });
+    });
+
+    describe('proposal test suite', () => {
+      /*
+       * Ported from the TC39 TG4 source map test suite: `range-mappings-proposal-tests.json`
+       * and `resources/proposals/range-mappings/*.js.map` of
+       * https://github.com/tc39/source-map-tests. The payloads are reproduced verbatim except
+       * for the `file` field, which this implementation does not read.
+       *
+       * The suite marks the malformed maps as invalid source maps. DevTools instead drops the
+       * `rangeMappings` field and keeps the regular mappings working, so those cases assert
+       * that no entry ends up marked.
+       */
+
+      interface CheckMapping {
+        generatedLine: number;
+        generatedColumn: number;
+        originalSource: string;
+        originalLine: number;
+        originalColumn: number;
+      }
+
+      const VLQ_CONTINUATION_BIT_MAPPINGS =
+          'AAAA,EAAE,EAAE,EAAE,EAAE,EAAE,EAAE,EAAE,EAAE,EAAE,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG,GAAG';
+
+      const INVALID: Array<{name: string, payload: SDK.SourceMap.SourceMapV3Object}> = [
+        {
+          name: 'rangeMappingsWrongType1',
+          payload: {version: 3, names: [], sources: [], mappings: '', rangeMappings: 3 as unknown as string},
+        },
+        {
+          name: 'rangeMappingsWrongType2',
+          payload: {version: 3, names: [], sources: [], mappings: '', rangeMappings: {x: 'foo'} as unknown as string},
+        },
+        {
+          name: 'rangeMappingsWrongType3',
+          payload: {version: 3, names: [], sources: [], mappings: '', rangeMappings: ['foo'] as unknown as string},
+        },
+        {
+          name: 'rangeMappingsInvalidBase64Char1',
+          payload: {version: 3, names: [], sources: [], mappings: '', rangeMappings: 'AB%'},
+        },
+        {
+          name: 'rangeMappingsInvalidBase64Char2',
+          payload: {version: 3, names: [], sources: [], mappings: '', rangeMappings: 'ab='},
+        },
+        {
+          name: 'rangeMappingsInvalidVLQZero',
+          payload: {version: 3, names: [], sources: ['empty-original.js'], mappings: 'A,A', rangeMappings: 'AA'},
+        },
+        {
+          name: 'rangeMappingsInvalidMappingForRange',
+          payload: {
+            version: 3,
+            names: [],
+            sources: ['invalid-mapping-for-range-original.js'],
+            mappings: ';A,EAAE',
+            rangeMappings: ';A',
+          },
+        },
+        {
+          name: 'rangeMappingsOutOfRange',
+          payload: {version: 3, names: [], sources: ['foo.js'], mappings: 'AAAA', rangeMappings: 'B'},
+        },
+        {
+          name: 'rangeMappingsOutOfRange2',
+          payload: {version: 3, names: [], sources: ['foo.js'], mappings: 'AAAA', rangeMappings: 'B;A;A'},
+        },
+        {
+          name: 'rangeMappingsOutOfRange3',
+          payload: {
+            version: 3,
+            names: [],
+            sources: ['out-of-range-3.js'],
+            mappings: VLQ_CONTINUATION_BIT_MAPPINGS,
+            rangeMappings: 'mC',
+          },
+        },
+      ];
+
+      const VALID: Array<{name: string, payload: SDK.SourceMap.SourceMapV3Object, checks: CheckMapping[]}> = [
+        {
+          name: 'rangeMappingsEmpty',
+          payload: {version: 3, names: [], sources: ['empty-original.js'], mappings: '', rangeMappings: ''},
+          checks: [],
+        },
+        {
+          name: 'rangeMappingsExtraLinesInRangeMappings',
+          payload: {
+            version: 3,
+            names: [],
+            sources: ['extra-lines-in-range-mappings-original.js'],
+            mappings: ';AAAA,EAAE;',
+            rangeMappings: ';A;;;',
+          },
+          checks: [],
+        },
+        {
+          name: 'rangeMappingsNonFullLineCoverage',
+          payload: {
+            version: 3,
+            names: [],
+            sources: ['simple-original.js'],
+            mappings: ';CAAA;A;;;',
+            rangeMappings: ';A',
+          },
+          checks: [],
+        },
+        {
+          name: 'rangeMappingsVLQContinuationBit',
+          payload: {
+            version: 3,
+            names: [],
+            sources: ['vlq-continuation-bit-original.js'],
+            mappings: VLQ_CONTINUATION_BIT_MAPPINGS,
+            rangeMappings: 'AgCF',
+          },
+          checks: [
+            // clang-format off
+            {generatedLine: 0, generatedColumn: 0, originalSource: 'vlq-continuation-bit-original.js', originalLine: 0, originalColumn: 0},
+            {generatedLine: 0, generatedColumn: 1, originalSource: 'vlq-continuation-bit-original.js', originalLine: 0, originalColumn: 1},
+            {generatedLine: 0, generatedColumn: 3, originalSource: 'vlq-continuation-bit-original.js', originalLine: 0, originalColumn: 2},
+            {generatedLine: 0, generatedColumn: 196, originalSource: 'vlq-continuation-bit-original.js', originalLine: 0, originalColumn: 195},
+            {generatedLine: 0, generatedColumn: 199, originalSource: 'vlq-continuation-bit-original.js', originalLine: 0, originalColumn: 199},
+            // clang-format on
+          ],
+        },
+        {
+          name: 'rangeMappingsSimple',
+          payload:
+              {version: 3, names: [], sources: ['simple-original.js'], mappings: ';CAAA;A', rangeMappings: ';A;'},
+          checks: [
+            // clang-format off
+            {generatedLine: 1, generatedColumn: 1, originalSource: 'simple-original.js', originalLine: 0, originalColumn: 0},
+            {generatedLine: 1, generatedColumn: 2, originalSource: 'simple-original.js', originalLine: 0, originalColumn: 1},
+            {generatedLine: 1, generatedColumn: 3, originalSource: 'simple-original.js', originalLine: 0, originalColumn: 2},
+            // clang-format on
+          ],
+        },
+        {
+          name: 'rangeMappingsMultipleMappings',
+          payload: {
+            version: 3,
+            names: [],
+            sources: ['multiple-mappings-original.js'],
+            mappings: ';CAAA,aAAa,EAAI,kBAAkB,EAAG;',
+            rangeMappings: ';AC;',
+          },
+          checks: [
+            // clang-format off
+            {generatedLine: 1, generatedColumn: 1, originalSource: 'multiple-mappings-original.js', originalLine: 0, originalColumn: 0},
+            {generatedLine: 1, generatedColumn: 2, originalSource: 'multiple-mappings-original.js', originalLine: 0, originalColumn: 1},
+            {generatedLine: 1, generatedColumn: 16, originalSource: 'multiple-mappings-original.js', originalLine: 0, originalColumn: 17},
+            {generatedLine: 1, generatedColumn: 18, originalSource: 'multiple-mappings-original.js', originalLine: 0, originalColumn: 19},
+            {generatedLine: 1, generatedColumn: 30, originalSource: 'multiple-mappings-original.js', originalLine: 0, originalColumn: 31},
+            {generatedLine: 1, generatedColumn: 34, originalSource: 'multiple-mappings-original.js', originalLine: 0, originalColumn: 35},
+            // The mapping at column 34 is not a range mapping, so column 35 collapses onto it.
+            {generatedLine: 1, generatedColumn: 35, originalSource: 'multiple-mappings-original.js', originalLine: 0, originalColumn: 35},
+            {generatedLine: 1, generatedColumn: 36, originalSource: 'multiple-mappings-original.js', originalLine: 0, originalColumn: 38},
+            // clang-format on
+          ],
+        },
+        {
+          name: 'rangeMappingsNewline',
+          payload: {
+            version: 3,
+            names: [],
+            sources: ['newline-semantics-original.js'],
+            mappings: 'CAAA;GACG',
+            rangeMappings: 'A;',
+          },
+          checks: [
+            // clang-format off
+            {generatedLine: 0, generatedColumn: 1, originalSource: 'newline-semantics-original.js', originalLine: 0, originalColumn: 0},
+            {generatedLine: 0, generatedColumn: 7, originalSource: 'newline-semantics-original.js', originalLine: 0, originalColumn: 6},
+            {generatedLine: 1, generatedColumn: 0, originalSource: 'newline-semantics-original.js', originalLine: 1, originalColumn: 0},
+            {generatedLine: 1, generatedColumn: 2, originalSource: 'newline-semantics-original.js', originalLine: 1, originalColumn: 2},
+            // clang-format on
+          ],
+        },
+      ];
+
+      for (const {name, payload} of INVALID) {
+        it(`drops the field of "${name}"`, () => {
+          const console = new Common.Console.Console();
+          const warn = sinon.spy(console, 'warn');
+
+          const sourceMap = createSourceMap(payload, console);
+
+          assert.isFalse(sourceMap.mappings().some(entry => entry.isRangeMapping));
+          sinon.assert.calledOnce(warn);
+          assert.include(warn.firstCall.args[0], 'rangeMappings');
+        });
+      }
+
+      for (const {name, payload, checks} of VALID) {
+        it(`accepts and resolves "${name}"`, () => {
+          const console = new Common.Console.Console();
+          const warn = sinon.spy(console, 'warn');
+
+          const sourceMap = createSourceMap(payload, console);
+          sourceMap.mappings();
+
+          sinon.assert.notCalled(warn);
+          for (const check of checks) {
+            const entry = sourceMap.findEntry(check.generatedLine, check.generatedColumn);
+            const actual = entry && {
+              originalSource: entry.sourceURL as string,
+              originalLine: entry.sourceLineNumber,
+              originalColumn: entry.sourceColumnNumber,
+            };
+            assert.deepEqual(actual, {
+              originalSource: check.originalSource,
+              originalLine: check.originalLine,
+              originalColumn: check.originalColumn,
+            },
+                             `unexpected mapping for ${check.generatedLine}:${check.generatedColumn}`);
+          }
+        });
+      }
+    });
   });
 });
