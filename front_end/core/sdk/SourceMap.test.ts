@@ -140,7 +140,7 @@ describeWithEnvironment('SourceMap', () => {
 
     it('throws when an unsigned VLQ number does not fit into 32 bits', () => {
       const iter = new SDK.SourceMap.TokenIterator('gggggggB');
-      assert.throws(() => iter.nextUnsignedVLQ(), /VLQ/);
+      assert.throws(() => iter.nextUnsignedVLQ(), /32 bits/);
     });
 
     it('throws when an unsigned VLQ number is truncated', () => {
