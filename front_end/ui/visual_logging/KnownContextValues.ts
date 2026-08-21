@@ -1652,6 +1652,7 @@ export const knownContextValues = new Set([
   'et',
   'etag',
   'eu',
+  'evaluate-deferred-module',
   'event',
   'event-group-name',
   'event-group-owner',

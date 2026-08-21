@@ -891,7 +891,17 @@ export class ConsoleViewMessage implements ConsoleViewportElement {
     const titleElement = document.createElement('span');
     titleElement.tabIndex = -1;
     titleElement.classList.add('console-object');
+    // A deferred module namespace can't be previewed without running the module, so it renders
+    // behind an explicit opt-in instead.
+    const isUnevaluatedDeferredModule = SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(obj);
     const renderPreview = (includeNullOrUndefined: boolean): void => {
+      if (isUnevaluatedDeferredModule) {
+        titleElement.classList.add('console-object-preview');
+        render(ObjectUI.ObjectPropertiesSection.renderPropertyValue(obj, /* wasThrown= */ false,
+                                                                    /* showPreview= */ true),
+               titleElement, {host: this});
+        return;
+      }
       if (obj.preview) {
         titleElement.classList.add('console-object-preview');
 
@@ -901,7 +911,7 @@ export class ConsoleViewMessage implements ConsoleViewportElement {
       }
     };
 
-    if (includePreview && obj.preview) {
+    if (isUnevaluatedDeferredModule || (includePreview && obj.preview)) {
       renderPreview(true);
     } else if (obj.type === 'function') {
       titleElement.classList.add('object-value-function');
@@ -922,6 +932,20 @@ export class ConsoleViewMessage implements ConsoleViewportElement {
     }
 
     const container = document.createElement('span');
+    if (isUnevaluatedDeferredModule) {
+      // The properties below were fetched before the module ran, so re-format from scratch once
+      // the user evaluates it.
+      container.addEventListener('deferred-module-evaluated', (event: Event) => {
+        const {object} = (event as CustomEvent<SDK.RemoteObject.CallFunctionResult>).detail;
+        if (!object) {
+          return;
+        }
+        const replacement = this.formatParameterAsObject(object, includePreview);
+        container.replaceWith(replacement);
+        this.messageResized({data: replacement} as unknown as
+                            Common.EventTarget.EventTargetEvent<HTMLElement|UI.TreeOutline.TreeElement>);
+      });
+    }
     const section = new ObjectUI.ObjectPropertiesSection.ObjectPropertiesSectionWidget();
     section.markAsRoot();
     const treeElement = section.element;

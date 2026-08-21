@@ -15,7 +15,7 @@ import * as Components from '../utils/utils.js';
 
 import {CustomPreviewComponent} from './CustomPreviewComponent.js';
 import objectPopoverStyles from './objectPopover.css.js';
-import {ObjectPropertiesSectionWidget, valueElementForFunctionDescription} from './ObjectPropertiesSection.js';
+import {ObjectPropertiesSectionWidget, renderPropertyValue, valueElementForFunctionDescription} from './ObjectPropertiesSection.js';
 import objectValueStyles from './objectValue.css.js';
 
 const UIStrings = {
@@ -69,6 +69,11 @@ export class ObjectPopoverHelper {
           titleElement.classList.add('source-code');
           // eslint-disable-next-line @devtools/no-lit-render-outside-of-view
           render(valueElementForFunctionDescription(result.description), titleElement);
+        } else if (SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(result)) {
+          // Don't preview the exports of a module that hasn't run: reading one would run it.
+          titleElement.classList.add('monospace');
+          // eslint-disable-next-line @devtools/no-lit-render-outside-of-view
+          render(renderPropertyValue(result, /* wasThrown= */ false, /* showPreview= */ true), titleElement);
         } else {
           titleElement.classList.add('monospace');
           titleElement.createChild('span').textContent = description;

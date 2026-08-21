@@ -48,7 +48,7 @@ export class RemoteObjectPreviewFormatter {
         return 2;
       }
       if (property.name === InternalName.GENERATOR_STATE || property.name === InternalName.PRIMITIVE_VALUE ||
-          property.name === InternalName.WEAK_REF_TARGET) {
+          property.name === InternalName.WEAK_REF_TARGET || property.name === InternalName.MODULE_STATUS) {
         return 3;
       }
       if (property.type !== Protocol.Runtime.PropertyPreviewType.Function && !property.name.startsWith('#')) {
@@ -130,6 +130,15 @@ export class RemoteObjectPreviewFormatter {
           Generator<PropertyPreviewValue> {
     const properties = preview.properties.filter(p => p.type !== 'accessor')
                            .sort(RemoteObjectPreviewFormatter.objectPropertyComparator);
+
+    // A deferred module namespace whose module hasn't run yet has no values to show: reading one
+    // would evaluate the module. Show its state instead, the way promises show `<pending>`.
+    const moduleStatus = properties.find(p => p.name === InternalName.MODULE_STATUS)?.value;
+    if (moduleStatus !== undefined && moduleStatus !== 'evaluated') {
+      yield {name: moduleStatus === 'errored' ? '<errored>' : '<unevaluated>'};
+      return;
+    }
+
     for (let i = 0; i < properties.length; ++i) {
       const property = properties[i];
       const name = property.name;
@@ -148,6 +157,8 @@ export class RemoteObjectPreviewFormatter {
         yield {name: '<' + property.value + '>', value: property.value !== 'pending' ? promiseResult : undefined};
       } else if (preview.subtype === 'generator' && name === InternalName.GENERATOR_STATE) {
         yield {name: '<' + property.value + '>'};
+      } else if (name === InternalName.MODULE_STATUS) {
+        continue;
       } else if (name === InternalName.PRIMITIVE_VALUE) {
         yield {value: property};
       } else if (name === InternalName.WEAK_REF_TARGET) {
@@ -292,6 +303,7 @@ export class RemoteObjectPreviewFormatter {
 
 const enum InternalName {
   GENERATOR_STATE = '[[GeneratorState]]',
+  MODULE_STATUS = '[[ModuleStatus]]',
   PRIMITIVE_VALUE = '[[PrimitiveValue]]',
   PROMISE_STATE = '[[PromiseState]]',
   PROMISE_RESULT = '[[PromiseResult]]',

@@ -557,3 +557,91 @@ describeWithEnvironment('RemoteObject TypedArray', () => {
     assert.strictEqual(SDK.RemoteObject.RemoteObject.arrayNameFromDescription('Int32Array[20]'), 'Int32Array');
   });
 });
+
+describeWithEnvironment('deferred module namespaces', () => {
+  let runtimeModel: SDK.RuntimeModel.RuntimeModel;
+  let connection: MockCDPConnection;
+
+  function deferredNamespace(status?: string, objectId = '1'): SDK.RemoteObject.RemoteObject {
+    const preview: Protocol.Runtime.ObjectPreview|undefined = status === undefined ? undefined : {
+      type: Protocol.Runtime.ObjectPreviewType.Object,
+      description: 'Deferred Module',
+      overflow: false,
+      properties: [{name: '[[ModuleStatus]]', type: Protocol.Runtime.PropertyPreviewType.String, value: status}],
+    };
+    return runtimeModel.createRemoteObject({
+      type: Protocol.Runtime.RemoteObjectType.Object,
+      className: 'Deferred Module',
+      description: 'Deferred Module',
+      objectId: objectId as Protocol.Runtime.RemoteObjectId,
+      preview,
+    });
+  }
+
+  beforeEach(() => {
+    connection = new MockCDPConnection();
+    const target = createTarget({connection});
+    runtimeModel = target.model(SDK.RuntimeModel.RuntimeModel) as SDK.RuntimeModel.RuntimeModel;
+  });
+
+  it('reads the module status out of the preview', () => {
+    assert.strictEqual(SDK.RemoteObject.RemoteObject.deferredModuleStatus(deferredNamespace('linked')), 'linked');
+    assert.strictEqual(SDK.RemoteObject.RemoteObject.deferredModuleStatus(deferredNamespace('evaluated')), 'evaluated');
+    assert.isUndefined(SDK.RemoteObject.RemoteObject.deferredModuleStatus(
+        runtimeModel.createRemoteObject({type: Protocol.Runtime.RemoteObjectType.Object, className: 'Object'})));
+  });
+
+  it('treats every non-evaluated status as unevaluated', () => {
+    for (const status of ['linked', 'evaluating', 'errored']) {
+      assert.isTrue(
+          SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(deferredNamespace(status)), status);
+    }
+    assert.isFalse(SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(deferredNamespace('evaluated')));
+  });
+
+  it('falls back to the class name when no preview was requested', () => {
+    assert.isTrue(SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(deferredNamespace()));
+  });
+
+  it('is not unevaluated when a preview exists but reports no module status', () => {
+    // A backend that doesn't report `[[ModuleStatus]]` only produces a preview by reading the
+    // exports, which means the module has already run.
+    const withPreview = runtimeModel.createRemoteObject({
+      type: Protocol.Runtime.RemoteObjectType.Object,
+      className: 'Deferred Module',
+      description: 'Deferred Module',
+      objectId: '4' as Protocol.Runtime.RemoteObjectId,
+      preview: {
+        type: Protocol.Runtime.ObjectPreviewType.Object,
+        description: 'Deferred Module',
+        overflow: false,
+        properties: [{name: 'foo', type: Protocol.Runtime.PropertyPreviewType.Number, value: '1'}],
+      },
+    });
+    assert.isFalse(SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(withPreview));
+  });
+
+  it('does not match ordinary module namespaces or plain objects', () => {
+    const ordinary = runtimeModel.createRemoteObject({
+      type: Protocol.Runtime.RemoteObjectType.Object,
+      className: 'Module',
+      description: 'Module',
+      objectId: '2' as Protocol.Runtime.RemoteObjectId,
+    });
+    assert.isFalse(SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(ordinary));
+    assert.isFalse(
+        SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(SDK.RemoteObject.RemoteObject.fromLocalObject({})));
+  });
+
+  it('forwards generatePreview to Runtime.callFunctionOn', async () => {
+    const handler = sinon.stub().returns({result: {type: 'object', className: 'Deferred Module', objectId: '3'}});
+    connection.setSuccessHandler('Runtime.callFunctionOn', handler);
+
+    await deferredNamespace('linked').callFunction(function(this: object) {
+      return this;
+    }, undefined, {generatePreview: true});
+
+    sinon.assert.calledOnce(handler);
+    assert.isTrue(handler.firstCall.args[0].generatePreview);
+  });
+});

@@ -101,6 +101,12 @@ const UIStrings = {
    */
   invokePropertyGetter: 'Invoke property getter',
   /**
+   * @description Tooltip text for the button that runs a JavaScript module that was imported with
+   * `import defer` and hasn't run yet. Clicking the button runs the module, which makes the values
+   * it exports visible in DevTools.
+   */
+  evaluateDeferredModule: 'Evaluate deferred module',
+  /**
    * @description Tooltip text on a button to expand and show all hidden child properties.
    * @example {50} PH1
    */
@@ -857,6 +863,24 @@ export class ObjectTreeNode extends ObjectTreeNodeBase {
                        ?.object
                        // @ts-expect-error No way to teach TypeScript to preserve the Function-ness of `getter`.
                        ?.callFunction(invokeGetter, [SDK.RemoteObject.RemoteObject.toCallArgument(getter)]);
+    this.#adoptCallResult(result);
+  }
+
+  /**
+   * Adopts the namespace of a deferred module the user just chose to evaluate, so that the row
+   * picks up the real exports and becomes expandable.
+   */
+  deferredModuleEvaluated(result: SDK.RemoteObject.CallFunctionResult): void {
+    if (!result.object) {
+      return;
+    }
+    this.#adoptCallResult(result);
+    // Any children were listed before the module ran, so their values are stale placeholders.
+    // Dropping them makes the tree re-fetch from the evaluated namespace.
+    this.removeChildren();
+  }
+
+  #adoptCallResult(result?: SDK.RemoteObject.CallFunctionResult): void {
     if (!result?.object) {
       return;
     }
@@ -864,6 +888,7 @@ export class ObjectTreeNode extends ObjectTreeNodeBase {
     this.property.wasThrown = result.wasThrown || false;
     this.dispatchEventToListeners(ObjectTreeNodeBase.Events.VALUE_CHANGED);
   }
+
   #getSearchableNameText(): string {
     return /^\s|\s$|^$|\n/.test(this.property.name) ? `"${this.property.name.replace(/\n/g, '\u21B5')}"` :
                                                       this.property.name;
@@ -1549,6 +1574,13 @@ export function renderPropertyValue(value: SDK.RemoteObject.RemoteObject, wasThr
     return html`${result}`;
   }
 
+  // Previewing or expanding a deferred module namespace would read its exports, and reading an
+  // export runs the module. Render it behind an explicit opt-in instead, the way getters are.
+  if (!wasThrown && SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(value)) {
+    return html`<span ${valueRef ? ref(valueRef) : nothing} class="value object-value-object">${
+        widget(DeferredModuleValue, {object: value})}</span>`;
+  }
+
   const type = value.type;
   const subtype = value.subtype;
   const description = value.description || '';
@@ -1808,6 +1840,9 @@ export class ObjectPropertyWidget extends UI.Widget.Widget {
   constructor(target?: HTMLElement, view = OBJECT_PROPERTY_DEFAULT_VIEW) {
     super(target);
     this.#view = view;
+    this.contentElement.addEventListener('deferred-module-evaluated', (event: Event) => {
+      this.#property?.deferredModuleEvaluated((event as CustomEvent<SDK.RemoteObject.CallFunctionResult>).detail);
+    });
   }
 
   get property(): ObjectTreeNode|undefined {
@@ -2576,6 +2611,145 @@ export const EXPANDABLE_TEXT_DEFAULT_VIEW: ExpandableTextView = (input, output, 
       // clang-format on
       target);
 };
+
+/**
+ * Reads one export off a deferred module namespace, which is what runs the module. Passed as a
+ * string so that coverage instrumentation can't rewrite it, like `ObjectTreeNode.invokeGetter`.
+ */
+const FORCE_DEFERRED_MODULE_EVALUATION = `
+    function forceDeferredModuleEvaluation(name) {
+      void this[name];
+      return this;
+    }`;
+
+/**
+ * Whether reading this name off a deferred module namespace runs the module. V8 exempts `then`, so
+ * that awaiting the namespace doesn't run it, and the `[[…]]` names are internal properties rather
+ * than exports. Symbol keys are exempt too, but callers filter those separately.
+ */
+function triggersModuleEvaluation(name: string): boolean {
+  return !name.startsWith('[[') && name !== 'then';
+}
+
+/** The exports listed in a preview, which V8 reports without their values until the module runs. */
+function exportNamesFromPreview(object: SDK.RemoteObject.RemoteObject): string[]|undefined {
+  return object.preview?.properties.filter(({name}) => triggersModuleEvaluation(name)).map(({name}) => name);
+}
+
+export interface DeferredModuleValueViewInput {
+  object: SDK.RemoteObject.RemoteObject;
+  wasThrown: boolean;
+  /** Absent when there is no export to read, and therefore no way to run the module. */
+  evaluate?: () => void;
+}
+
+export type DeferredModuleValueView =
+    (input: DeferredModuleValueViewInput, output: object, target: HTMLElement) => void;
+
+export const DEFERRED_MODULE_VALUE_DEFAULT_VIEW: DeferredModuleValueView = (input, _output, target) => {
+  // Once the module has run there is nothing special left to show.
+  if (!SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(input.object)) {
+    render(renderPropertyValue(input.object, input.wasThrown, /* showPreview= */ true), target);
+    return;
+  }
+
+  const preview = input.object.preview ?
+      new RemoteObjectPreviewFormatter().renderObjectPreview(input.object.preview) :
+      input.object.description ?? '';
+  const evaluate = input.evaluate;
+  const onClick = (event: Event): void => {
+    event.consume();
+    evaluate?.();
+  };
+  render(
+      // clang-format off
+      html`${preview}${evaluate === undefined ? nothing : html`<span
+        class=object-value-calculate-value-button
+        title=${i18nString(UIStrings.evaluateDeferredModule)}
+        jslog=${VisualLogging.action('evaluate-deferred-module').track({click: true})}
+        @click=${onClick}
+        >${i18nString(UIStrings.dots)}</span>`}`,
+      // clang-format on
+      target);
+};
+
+/**
+ * Renders a deferred module namespace (`import defer * as ns from ...`) without running the module,
+ * plus a button that runs it on demand.
+ *
+ * The module is left alone until the button is clicked; afterwards the widget renders the evaluated
+ * namespace and dispatches `deferred-module-evaluated` so the surrounding tree row can pick up the
+ * new value and become expandable.
+ */
+export class DeferredModuleValue extends UI.Widget.Widget {
+  #object?: SDK.RemoteObject.RemoteObject;
+  #wasThrown = false;
+  #evaluating = false;
+  readonly #view: DeferredModuleValueView;
+
+  constructor(target?: HTMLElement, view = DEFERRED_MODULE_VALUE_DEFAULT_VIEW) {
+    super(target);
+    this.#view = view;
+  }
+
+  set object(object: SDK.RemoteObject.RemoteObject) {
+    this.#object = object;
+    this.#wasThrown = false;
+    this.requestUpdate();
+  }
+
+  override performUpdate(): void {
+    if (!this.#object) {
+      return;
+    }
+    // A module with no exports has nothing we can read to run it, so don't offer a button that
+    // wouldn't do anything. Without a preview we can't tell, and assume there is something to read.
+    const hasNothingToRead = exportNamesFromPreview(this.#object)?.length === 0;
+    this.#view(
+        {
+          object: this.#object,
+          wasThrown: this.#wasThrown,
+          evaluate: hasNothingToRead ? undefined : () => void this.#evaluate(),
+        },
+        {}, this.contentElement);
+  }
+
+  async #evaluate(): Promise<void> {
+    const object = this.#object;
+    if (!object || this.#evaluating) {
+      return;
+    }
+    this.#evaluating = true;
+    try {
+      // Listing the exports doesn't run the module; reading one of them does. The preview usually
+      // already carries the names, so only ask the page when it doesn't.
+      let exportName = exportNamesFromPreview(object)?.[0];
+      if (exportName === undefined) {
+        const {properties} = await object.getOwnProperties(/* generatePreview= */ false);
+        exportName = properties?.find(({name, symbol, private: isPrivate}) =>
+                                          !symbol && !isPrivate && triggersModuleEvaluation(name))
+                         ?.name;
+      }
+      if (exportName === undefined) {
+        return;
+      }
+      const result = await object.callFunction(
+          FORCE_DEFERRED_MODULE_EVALUATION as unknown as (this: object, name: string) => object,
+          [{value: exportName}], {generatePreview: true});
+      if (!result.object || !this.isShowing()) {
+        return;
+      }
+      this.#object = result.object;
+      // An errored module stays errored, so the row correctly sticks on the exception.
+      this.#wasThrown = result.wasThrown || false;
+      this.requestUpdate();
+      this.contentElement.dispatchEvent(
+          new CustomEvent('deferred-module-evaluated', {bubbles: true, composed: true, detail: result}));
+    } finally {
+      this.#evaluating = false;
+    }
+  }
+}
 
 export class ExpandableTextPropertyValue extends UI.Widget.Widget {
   static readonly MAX_DISPLAYABLE_TEXT_LENGTH = 10000000;

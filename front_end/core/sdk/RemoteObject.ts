@@ -74,6 +74,39 @@ export abstract class RemoteObject {
     return Boolean(matches?.[1] === '0');
   }
 
+  /**
+   * Returns the `[[ModuleStatus]]` of a deferred module namespace object, as reported by V8
+   * in the object's preview. Returns `undefined` for any other object, and also for a deferred
+   * module namespace that was fetched without `generatePreview`.
+   */
+  static deferredModuleStatus(object: RemoteObject|Protocol.Runtime.RemoteObject): DeferredModuleStatus|undefined {
+    const property = object.preview?.properties.find(({name}) => name === DEFERRED_MODULE_STATUS_PROPERTY_NAME);
+    return property?.value as DeferredModuleStatus | undefined;
+  }
+
+  /**
+   * Returns `true` for a deferred module namespace object (`import defer * as ns from ...`) whose
+   * module hasn't been evaluated yet.
+   *
+   * Reading a binding off such an object runs the module, so DevTools must neither preview its
+   * exports nor expand it eagerly. V8 flips `[[ModuleStatus]]` to `evaluated` once the module has
+   * run, which is why this needs no per-objectId bookkeeping to stay correct across pauses.
+   *
+   * Surfaces that fetch without `generatePreview` get no `[[ModuleStatus]]`, so we fall back to
+   * recognizing the `@@toStringTag` V8 installs on deferred namespaces and assume the module hasn't
+   * run. A preview means the backend already read the exports, so the module has run either way —
+   * which also keeps this correct against a V8 that doesn't report `[[ModuleStatus]]` at all.
+   */
+  static isUnevaluatedDeferredModuleNamespace(object: RemoteObject|Protocol.Runtime.RemoteObject): boolean {
+    const status = RemoteObject.deferredModuleStatus(object);
+    if (status !== undefined) {
+      return status !== DeferredModuleStatus.EVALUATED;
+    }
+    // If CDP ever grows a dedicated subtype for these, this is the only line that needs to change.
+    return !object.preview && object.type === Protocol.Runtime.RemoteObjectType.Object &&
+        object.className === DEFERRED_MODULE_NAMESPACE_CLASS_NAME;
+  }
+
   static unserializableDescription(object: unknown): string|null {
     if (typeof object === 'number') {
       const description = String(object);
@@ -215,13 +248,13 @@ export abstract class RemoteObject {
 
   callFunction<T, U>(
       _functionDeclaration: (this: U, ...args: any[]) => T, _args?: Protocol.Runtime.CallArgument[],
-      _params?: {throwOnSideEffect?: boolean}|undefined): Promise<CallFunctionResult> {
+      _params?: CallFunctionParams|undefined): Promise<CallFunctionResult> {
     throw new Error('Not implemented');
   }
 
   callFunctionJSON<T, U>(
       _functionDeclaration: (this: U, ...args: any[]) => T, _args: Protocol.Runtime.CallArgument[]|undefined,
-      _params?: {throwOnSideEffect?: boolean}|undefined): Promise<T|null> {
+      _params?: CallFunctionParams|undefined): Promise<T|null> {
     throw new Error('Not implemented');
   }
 
@@ -528,13 +561,14 @@ export class RemoteObjectImpl extends RemoteObject {
 
   override async callFunction<T, U>(
       functionDeclaration: (this: U, ...args: any[]) => T, args?: Protocol.Runtime.CallArgument[],
-      params?: {throwOnSideEffect?: boolean}): Promise<CallFunctionResult> {
+      params?: CallFunctionParams): Promise<CallFunctionResult> {
     const response = await this.#runtimeAgent.invoke_callFunctionOn({
       objectId: this.#objectId,
       functionDeclaration: functionDeclaration.toString(),
       arguments: args,
       silent: true,
       throwOnSideEffect: params?.throwOnSideEffect,
+      generatePreview: params?.generatePreview,
     });
     if (response.getError()) {
       return {object: null, wasThrown: false};
@@ -548,7 +582,7 @@ export class RemoteObjectImpl extends RemoteObject {
 
   override async callFunctionJSON<T, U>(
       functionDeclaration: (this: U, ...args: any[]) => T, args: Protocol.Runtime.CallArgument[]|undefined,
-      params?: {throwOnSideEffect?: boolean}): Promise<T|null> {
+      params?: CallFunctionParams): Promise<T|null> {
     const response = await this.#runtimeAgent.invoke_callFunctionOn({
       objectId: this.#objectId,
       functionDeclaration: functionDeclaration.toString(),
@@ -1119,11 +1153,34 @@ export class RemoteError {
 const descriptionLengthParenRegex = /\(([0-9]+)\)/;
 const descriptionLengthSquareRegex = /\[([0-9]+)\]/;
 
+/** Internal property V8 reports for deferred module namespace objects. */
+const DEFERRED_MODULE_STATUS_PROPERTY_NAME = '[[ModuleStatus]]';
+
+/**
+ * The `@@toStringTag` V8 installs on `JSDeferredModuleNamespace` objects, surfaced through
+ * `Runtime.RemoteObject.className`. Ordinary module namespaces use `'Module'`.
+ */
+const DEFERRED_MODULE_NAMESPACE_CLASS_NAME = 'Deferred Module';
+
+/** Values of the `[[ModuleStatus]]` internal property, mirroring V8's `Module::Status`. */
+export const enum DeferredModuleStatus {
+  LINKED = 'linked',
+  EVALUATING = 'evaluating',
+  EVALUATED = 'evaluated',
+  ERRORED = 'errored',
+}
+
 const enum UnserializableNumber {
   NEGATIVE_ZERO = ('-0'),
   NAN = ('NaN'),
   INFINITY = ('Infinity'),
   NEGATIVE_INFINITY = ('-Infinity'),
+}
+
+export interface CallFunctionParams {
+  throwOnSideEffect?: boolean;
+  /** Ask the backend for an `ObjectPreview` on the returned object. */
+  generatePreview?: boolean;
 }
 
 export interface CallFunctionResult {

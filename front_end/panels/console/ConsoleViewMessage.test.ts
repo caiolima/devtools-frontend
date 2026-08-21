@@ -246,6 +246,44 @@ describeWithEnvironment('ConsoleViewMessage', () => {
       assert.isFalse(section.objectTree.readOnly);
     });
 
+    it('logs a deferred module namespace as unevaluated, behind an evaluate button', async () => {
+      const target = createTarget();
+      const runtimeModel = target.model(SDK.RuntimeModel.RuntimeModel);
+      assert.exists(runtimeModel);
+      const remoteObject = runtimeModel.createRemoteObject({
+        type: Protocol.Runtime.RemoteObjectType.Object,
+        className: 'Deferred Module',
+        description: 'Deferred Module',
+        objectId: '1' as Protocol.Runtime.RemoteObjectId,
+        preview: {
+          type: Protocol.Runtime.ObjectPreviewType.Object,
+          description: 'Deferred Module',
+          overflow: false,
+          properties: [
+            {name: 'answer', type: Protocol.Runtime.PropertyPreviewType.String},
+            {name: '[[ModuleStatus]]', type: Protocol.Runtime.PropertyPreviewType.String, value: 'linked'},
+          ],
+        },
+      });
+      const rawMessage = new SDK.ConsoleModel.ConsoleMessage(
+          runtimeModel,
+          Common.Console.FrontendMessageSource.ConsoleAPI,
+          Protocol.Log.LogEntryLevel.Info,
+          '',
+          {parameters: [remoteObject]},
+      );
+      const {message} = createConsoleViewMessageWithStubDeps(rawMessage);
+      const messageElement = message.toMessageElement();
+      renderElementIntoDOM(messageElement);
+      await UI.Widget.Widget.allUpdatesComplete;
+      await raf();
+
+      const textContent = messageElement.deepTextContent();
+      assert.include(textContent, '<unevaluated>');
+      assert.notInclude(textContent, 'answer');
+      assert.include(textContent, '(...)');
+    });
+
     it('formats console.dir(document.__proto__) without exception', async () => {
       const target = createTarget();
       const runtimeModel = target.model(SDK.RuntimeModel.RuntimeModel);
