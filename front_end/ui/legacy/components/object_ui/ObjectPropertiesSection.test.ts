@@ -1038,8 +1038,7 @@ describeWithEnvironment('ObjectTreeNode', () => {
     assert.exists(node.children);
 
     const childrenChanged = sinon.spy();
-    node.addEventListener(
-        ObjectUI.ObjectPropertiesSection.ObjectTreeNodeBase.Events.CHILDREN_CHANGED, childrenChanged);
+    node.addEventListener(ObjectUI.ObjectPropertiesSection.ObjectTreeNodeBase.Events.CHILDREN_CHANGED, childrenChanged);
     const evaluated = SDK.RemoteObject.RemoteObject.fromLocalObject({fresh: 2});
     node.deferredModuleEvaluated({object: evaluated, wasThrown: false});
 
@@ -1465,6 +1464,7 @@ describeWithEnvironment('deferred module namespaces', () => {
   function deferredNamespace(status = 'linked'): SDK.RemoteObject.RemoteObject {
     return runtimeModel.createRemoteObject({
       type: Protocol.Runtime.RemoteObjectType.Object,
+      subtype: Protocol.Runtime.RemoteObjectSubtype.Deferredmodule,
       className: 'Deferred Module',
       description: 'Deferred Module',
       objectId: 'ns' as Protocol.Runtime.RemoteObjectId,
@@ -1502,6 +1502,7 @@ describeWithEnvironment('deferred module namespaces', () => {
   it('renders normally once the module has been evaluated', async () => {
     const evaluated = runtimeModel.createRemoteObject({
       type: Protocol.Runtime.RemoteObjectType.Object,
+      subtype: Protocol.Runtime.RemoteObjectSubtype.Deferredmodule,
       className: 'Deferred Module',
       description: 'Deferred Module',
       objectId: 'ns' as Protocol.Runtime.RemoteObjectId,
@@ -1552,15 +1553,76 @@ describeWithEnvironment('deferred module namespaces', () => {
     sinon.assert.calledOnce(callFunctionOn);
     const request = callFunctionOn.firstCall.args[0];
     assert.strictEqual(request.objectId, 'ns');
-    assert.deepEqual(request.arguments, [{value: 'a'}]);
+    assert.include(request.functionDeclaration, 'Object.keys(this)');
     assert.isTrue(request.generatePreview);
     assert.notExists(container.querySelector('.object-value-calculate-value-button'));
     assert.include(container.textContent, 'a: 1');
   });
 
-  it('offers no button for a module with no exports to read', async () => {
+  it('renders a plain description on surfaces that do not want previews', async () => {
+    const container = document.createElement('div');
+    render(ObjectUI.ObjectPropertiesSection.renderPropertyValue(deferredNamespace(), false, /* showPreview= */ false),
+           container);
+    renderElementIntoDOM(container, {allowMultipleChildren: true});
+    await UI.Widget.Widget.allUpdatesComplete;
+    await raf();
+
+    assert.notInclude(container.textContent, '<unevaluated>');
+    assert.include(container.textContent, 'Deferred Module');
+    // The button is the only signal that the module can be run, so it must survive.
+    assert.exists(container.querySelector('.object-value-calculate-value-button'));
+  });
+
+  it('offers no disclosure triangle until the module has been evaluated', () => {
+    const property = new SDK.RemoteObject.RemoteObjectProperty('ns', deferredNamespace(), true, true);
+    const treeOutline = new UI.TreeOutline.TreeOutlineInShadow();
+    const element = new ObjectUI.ObjectPropertiesSection.ObjectPropertyTreeElement(
+        new ObjectUI.ObjectPropertiesSection.ObjectTreeNode(property, undefined, {
+          readOnly: false,
+          propertiesMode: ObjectUI.ObjectPropertiesSection.ObjectPropertiesMode.OWN_AND_INTERNAL_AND_INHERITED,
+        }),
+        undefined);
+    treeOutline.appendChild(element);
+
+    assert.isFalse(element.isExpandable());
+  });
+
+  it('keeps the evaluate button on an expanded row', async () => {
+    const property = new SDK.RemoteObject.RemoteObjectProperty('ns', deferredNamespace(), true, true);
+    const container = document.createElement('div');
+    const input: ObjectUI.ObjectPropertiesSection.ObjectPropertyViewInput = {
+      editable: false,
+      startEditing: sinon.spy(),
+      invokeGetter: sinon.spy(),
+      onAutoComplete: sinon.spy(),
+      linkifier: undefined,
+      completions: [],
+      // Expanding to inspect the exports must not take the affordance away.
+      expanded: true,
+      editing: false,
+      editingEnded: sinon.spy(),
+      editingCommitted: sinon.spy(),
+      node: new ObjectUI.ObjectPropertiesSection.ObjectTreeNode(property, undefined, {
+        readOnly: false,
+        propertiesMode: ObjectUI.ObjectPropertiesSection.ObjectPropertiesMode.OWN_AND_INTERNAL_AND_INHERITED,
+      }),
+    };
+    ObjectUI.ObjectPropertiesSection.OBJECT_PROPERTY_DEFAULT_VIEW(
+        input, {valueElement: undefined, nameElement: undefined}, container);
+    renderElementIntoDOM(container, {allowMultipleChildren: true});
+    await UI.Widget.Widget.allUpdatesComplete;
+    await raf();
+
+    assert.exists(container.querySelector('.object-value-calculate-value-button'));
+    assert.include(container.textContent, '<unevaluated>');
+  });
+
+  it('offers the button even though no exports are reported yet', async () => {
+    // The debugger withholds the export list until the module runs, so the preview carries nothing
+    // but the status. The button must not depend on knowing a name.
     const noExports = runtimeModel.createRemoteObject({
       type: Protocol.Runtime.RemoteObjectType.Object,
+      subtype: Protocol.Runtime.RemoteObjectSubtype.Deferredmodule,
       className: 'Deferred Module',
       description: 'Deferred Module',
       objectId: 'ns' as Protocol.Runtime.RemoteObjectId,
@@ -1575,19 +1637,19 @@ describeWithEnvironment('deferred module namespaces', () => {
     const container = await renderValue(noExports);
 
     assert.include(container.textContent, '<unevaluated>');
-    assert.notExists(container.querySelector('.object-value-calculate-value-button'));
+    assert.exists(container.querySelector('.object-value-calculate-value-button'));
   });
 
-  it('reads the export name from the preview without asking the page for it', async () => {
+  it('runs the module by enumerating keys, without asking the page for property names', async () => {
     const getProperties = sinon.stub().returns({result: []});
     connection.setSuccessHandler('Runtime.getProperties', getProperties);
     connection.setSuccessHandler('Runtime.callFunctionOn', () => ({
-                                                              result: {
-                                                                type: Protocol.Runtime.RemoteObjectType.Object,
-                                                                className: 'Deferred Module',
-                                                                objectId: 'ns' as Protocol.Runtime.RemoteObjectId,
-                                                              },
-                                                            }));
+                                                             result: {
+                                                               type: Protocol.Runtime.RemoteObjectType.Object,
+                                                               className: 'Deferred Module',
+                                                               objectId: 'ns' as Protocol.Runtime.RemoteObjectId,
+                                                             },
+                                                           }));
 
     const container = await renderValue(deferredNamespace());
     dispatchClickEvent(container.querySelector('.object-value-calculate-value-button')!);

@@ -1578,7 +1578,7 @@ export function renderPropertyValue(value: SDK.RemoteObject.RemoteObject, wasThr
   // export runs the module. Render it behind an explicit opt-in instead, the way getters are.
   if (!wasThrown && SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(value)) {
     return html`<span ${valueRef ? ref(valueRef) : nothing} class="value object-value-object">${
-        widget(DeferredModuleValue, {object: value})}</span>`;
+        widget(DeferredModuleValue, {object: value, showPreview})}</span>`;
   }
 
   const type = value.type;
@@ -2613,62 +2613,51 @@ export const EXPANDABLE_TEXT_DEFAULT_VIEW: ExpandableTextView = (input, output, 
 };
 
 /**
- * Reads one export off a deferred module namespace, which is what runs the module. Passed as a
- * string so that coverage instrumentation can't rewrite it, like `ObjectTreeNode.invokeGetter`.
+ * Runs the module behind a deferred namespace. Enumerating its keys is enough: that triggers
+ * evaluation just like reading an export would, but needs no export name — which the debugger
+ * deliberately withholds until the module has run, and which a module exporting nothing never has.
+ * Passed as a string so that coverage instrumentation can't rewrite it, like
+ * `ObjectTreeNode.invokeGetter`.
  */
 const FORCE_DEFERRED_MODULE_EVALUATION = `
-    function forceDeferredModuleEvaluation(name) {
-      void this[name];
+    function forceDeferredModuleEvaluation() {
+      Object.keys(this);
       return this;
     }`;
-
-/**
- * Whether reading this name off a deferred module namespace runs the module. V8 exempts `then`, so
- * that awaiting the namespace doesn't run it, and the `[[…]]` names are internal properties rather
- * than exports. Symbol keys are exempt too, but callers filter those separately.
- */
-function triggersModuleEvaluation(name: string): boolean {
-  return !name.startsWith('[[') && name !== 'then';
-}
-
-/** The exports listed in a preview, which V8 reports without their values until the module runs. */
-function exportNamesFromPreview(object: SDK.RemoteObject.RemoteObject): string[]|undefined {
-  return object.preview?.properties.filter(({name}) => triggersModuleEvaluation(name)).map(({name}) => name);
-}
 
 export interface DeferredModuleValueViewInput {
   object: SDK.RemoteObject.RemoteObject;
   wasThrown: boolean;
-  /** Absent when there is no export to read, and therefore no way to run the module. */
-  evaluate?: () => void;
+  /** Whether the surface wants a preview at all; watch expressions render descriptions only. */
+  showPreview: boolean;
+  evaluate: () => void;
 }
 
-export type DeferredModuleValueView =
-    (input: DeferredModuleValueViewInput, output: object, target: HTMLElement) => void;
+export type DeferredModuleValueView = (input: DeferredModuleValueViewInput, output: object, target: HTMLElement) =>
+    void;
 
 export const DEFERRED_MODULE_VALUE_DEFAULT_VIEW: DeferredModuleValueView = (input, _output, target) => {
   // Once the module has run there is nothing special left to show.
   if (!SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(input.object)) {
-    render(renderPropertyValue(input.object, input.wasThrown, /* showPreview= */ true), target);
+    render(renderPropertyValue(input.object, input.wasThrown, input.showPreview), target);
     return;
   }
 
-  const preview = input.object.preview ?
+  const preview = input.showPreview && input.object.preview ?
       new RemoteObjectPreviewFormatter().renderObjectPreview(input.object.preview) :
       input.object.description ?? '';
-  const evaluate = input.evaluate;
   const onClick = (event: Event): void => {
     event.consume();
-    evaluate?.();
+    input.evaluate();
   };
   render(
       // clang-format off
-      html`${preview}${evaluate === undefined ? nothing : html`<span
+      html`${preview}<span
         class=object-value-calculate-value-button
         title=${i18nString(UIStrings.evaluateDeferredModule)}
         jslog=${VisualLogging.action('evaluate-deferred-module').track({click: true})}
         @click=${onClick}
-        >${i18nString(UIStrings.dots)}</span>`}`,
+        >${i18nString(UIStrings.dots)}</span>`,
       // clang-format on
       target);
 };
@@ -2684,6 +2673,7 @@ export const DEFERRED_MODULE_VALUE_DEFAULT_VIEW: DeferredModuleValueView = (inpu
 export class DeferredModuleValue extends UI.Widget.Widget {
   #object?: SDK.RemoteObject.RemoteObject;
   #wasThrown = false;
+  #showPreview = true;
   #evaluating = false;
   readonly #view: DeferredModuleValueView;
 
@@ -2693,8 +2683,19 @@ export class DeferredModuleValue extends UI.Widget.Widget {
   }
 
   set object(object: SDK.RemoteObject.RemoteObject) {
+    if (this.#object === object) {
+      return;
+    }
     this.#object = object;
     this.#wasThrown = false;
+    this.requestUpdate();
+  }
+
+  set showPreview(showPreview: boolean) {
+    if (this.#showPreview === showPreview) {
+      return;
+    }
+    this.#showPreview = showPreview;
     this.requestUpdate();
   }
 
@@ -2704,14 +2705,13 @@ export class DeferredModuleValue extends UI.Widget.Widget {
     }
     // A module with no exports has nothing we can read to run it, so don't offer a button that
     // wouldn't do anything. Without a preview we can't tell, and assume there is something to read.
-    const hasNothingToRead = exportNamesFromPreview(this.#object)?.length === 0;
-    this.#view(
-        {
-          object: this.#object,
-          wasThrown: this.#wasThrown,
-          evaluate: hasNothingToRead ? undefined : () => void this.#evaluate(),
-        },
-        {}, this.contentElement);
+    this.#view({
+      object: this.#object,
+      wasThrown: this.#wasThrown,
+      showPreview: this.#showPreview,
+      evaluate: () => void this.#evaluate(),
+    },
+               {}, this.contentElement);
   }
 
   async #evaluate(): Promise<void> {
@@ -2721,21 +2721,9 @@ export class DeferredModuleValue extends UI.Widget.Widget {
     }
     this.#evaluating = true;
     try {
-      // Listing the exports doesn't run the module; reading one of them does. The preview usually
-      // already carries the names, so only ask the page when it doesn't.
-      let exportName = exportNamesFromPreview(object)?.[0];
-      if (exportName === undefined) {
-        const {properties} = await object.getOwnProperties(/* generatePreview= */ false);
-        exportName = properties?.find(({name, symbol, private: isPrivate}) =>
-                                          !symbol && !isPrivate && triggersModuleEvaluation(name))
-                         ?.name;
-      }
-      if (exportName === undefined) {
-        return;
-      }
       const result = await object.callFunction(
-          FORCE_DEFERRED_MODULE_EVALUATION as unknown as (this: object, name: string) => object,
-          [{value: exportName}], {generatePreview: true});
+          FORCE_DEFERRED_MODULE_EVALUATION as unknown as (this: object) => object, undefined,
+          {generatePreview: true});
       if (!result.object || !this.isShowing()) {
         return;
       }

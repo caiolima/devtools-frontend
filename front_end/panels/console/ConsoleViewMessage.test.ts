@@ -252,6 +252,7 @@ describeWithEnvironment('ConsoleViewMessage', () => {
       assert.exists(runtimeModel);
       const remoteObject = runtimeModel.createRemoteObject({
         type: Protocol.Runtime.RemoteObjectType.Object,
+        subtype: Protocol.Runtime.RemoteObjectSubtype.Deferredmodule,
         className: 'Deferred Module',
         description: 'Deferred Module',
         objectId: '1' as Protocol.Runtime.RemoteObjectId,

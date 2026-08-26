@@ -571,6 +571,7 @@ describeWithEnvironment('deferred module namespaces', () => {
     };
     return runtimeModel.createRemoteObject({
       type: Protocol.Runtime.RemoteObjectType.Object,
+      subtype: Protocol.Runtime.RemoteObjectSubtype.Deferredmodule,
       className: 'Deferred Module',
       description: 'Deferred Module',
       objectId: objectId as Protocol.Runtime.RemoteObjectId,
@@ -584,6 +585,73 @@ describeWithEnvironment('deferred module namespaces', () => {
     runtimeModel = target.model(SDK.RuntimeModel.RuntimeModel) as SDK.RuntimeModel.RuntimeModel;
   });
 
+  it('keeps own accessors that the accessor-only request did not return', async () => {
+    // A deferred module namespace reports its exports as accessors while unevaluated, but the
+    // `accessorPropertiesOnly` request comes back empty for them. The merge must not drop the
+    // property in that case, or the expanded row renders blank.
+    const connection = new MockCDPConnection();
+    connection.setSuccessHandler('Runtime.getProperties', (req: Protocol.Runtime.GetPropertiesRequest) => {
+      if (req.accessorPropertiesOnly) {
+        return {result: []} as unknown as Protocol.Runtime.GetPropertiesResponse;
+      }
+      return {
+        result: [{
+          name: 'foo',
+          configurable: true,
+          enumerable: true,
+          isOwn: true,
+          get: {type: 'function', className: 'Function', description: 'function foo() {}', objectId: 'g1'},
+        }],
+        internalProperties: [{name: '[[ModuleStatus]]', value: {type: 'string', value: 'linked'}}],
+      } as unknown as Protocol.Runtime.GetPropertiesResponse;
+    });
+    const target = createTarget({connection});
+    const runtimeModel = target.model(SDK.RuntimeModel.RuntimeModel) as SDK.RuntimeModel.RuntimeModel;
+    const ns = runtimeModel.createRemoteObject({
+      type: Protocol.Runtime.RemoteObjectType.Object,
+      subtype: Protocol.Runtime.RemoteObjectSubtype.Deferredmodule,
+      className: 'Deferred Module',
+      description: 'Deferred Module',
+      objectId: 'ns' as Protocol.Runtime.RemoteObjectId,
+    });
+
+    const {properties, internalProperties} = await SDK.RemoteObject.RemoteObject.loadFromObjectPerProto(ns, true);
+
+    assert.deepEqual(properties?.map(p => p.name), ['foo']);
+    assert.deepEqual(internalProperties?.map(p => p.name), ['[[ModuleStatus]]']);
+  });
+
+  it('prefers the accessor-only result when both requests return a property', async () => {
+    const connection = new MockCDPConnection();
+    connection.setSuccessHandler('Runtime.getProperties', (req: Protocol.Runtime.GetPropertiesRequest) => {
+      const descriptor = {
+        name: 'foo',
+        configurable: true,
+        enumerable: true,
+        isOwn: true,
+        get: {
+          type: 'function',
+          className: 'Function',
+          description: req.accessorPropertiesOnly ? 'accessor-only' : 'own',
+          objectId: 'g1',
+        },
+      };
+      return {result: [descriptor]} as unknown as Protocol.Runtime.GetPropertiesResponse;
+    });
+    const target = createTarget({connection});
+    const runtimeModel = target.model(SDK.RuntimeModel.RuntimeModel) as SDK.RuntimeModel.RuntimeModel;
+    const object = runtimeModel.createRemoteObject({
+      type: Protocol.Runtime.RemoteObjectType.Object,
+      className: 'Object',
+      objectId: 'o' as Protocol.Runtime.RemoteObjectId,
+    });
+
+    const {properties} = await SDK.RemoteObject.RemoteObject.loadFromObjectPerProto(object, false);
+
+    assert.lengthOf(properties ?? [], 1);
+    assert.strictEqual(properties?.[0].getter?.description, 'accessor-only');
+  });
+
   it('reads the module status out of the preview', () => {
     assert.strictEqual(SDK.RemoteObject.RemoteObject.deferredModuleStatus(deferredNamespace('linked')), 'linked');
     assert.strictEqual(SDK.RemoteObject.RemoteObject.deferredModuleStatus(deferredNamespace('evaluated')), 'evaluated');
@@ -593,8 +661,8 @@ describeWithEnvironment('deferred module namespaces', () => {
 
   it('treats every non-evaluated status as unevaluated', () => {
     for (const status of ['linked', 'evaluating', 'errored']) {
-      assert.isTrue(
-          SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(deferredNamespace(status)), status);
+      assert.isTrue(SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(deferredNamespace(status)),
+                    status);
     }
     assert.isFalse(SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(deferredNamespace('evaluated')));
   });
@@ -608,6 +676,7 @@ describeWithEnvironment('deferred module namespaces', () => {
     // exports, which means the module has already run.
     const withPreview = runtimeModel.createRemoteObject({
       type: Protocol.Runtime.RemoteObjectType.Object,
+      subtype: Protocol.Runtime.RemoteObjectSubtype.Deferredmodule,
       className: 'Deferred Module',
       description: 'Deferred Module',
       objectId: '4' as Protocol.Runtime.RemoteObjectId,
@@ -621,6 +690,53 @@ describeWithEnvironment('deferred module namespaces', () => {
     assert.isFalse(SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(withPreview));
   });
 
+  it('is not expandable until the module has been evaluated', () => {
+    assert.isFalse(deferredNamespace('linked').hasChildren);
+    assert.isFalse(deferredNamespace('evaluating').hasChildren);
+    assert.isFalse(deferredNamespace('errored').hasChildren);
+    assert.isTrue(deferredNamespace('evaluated').hasChildren);
+    // Without a preview we can't tell, and assume it hasn't run.
+    assert.isFalse(deferredNamespace().hasChildren);
+  });
+
+  it('ignores an object impersonating a deferred module namespace', () => {
+    // A page can set `Symbol.toStringTag` to 'Deferred Module' and define an own property named
+    // `[[ModuleStatus]]`; both reach the frontend looking authentic. Only the subtype cannot be
+    // forged, so an impostor must stay an ordinary, expandable object.
+    const impostor = runtimeModel.createRemoteObject({
+      type: Protocol.Runtime.RemoteObjectType.Object,
+      className: 'Deferred Module',
+      description: 'Deferred Module',
+      objectId: '8' as Protocol.Runtime.RemoteObjectId,
+      preview: {
+        type: Protocol.Runtime.ObjectPreviewType.Object,
+        description: 'Object',
+        overflow: false,
+        properties: [{name: '[[ModuleStatus]]', type: Protocol.Runtime.PropertyPreviewType.String, value: 'linked'}],
+      },
+    });
+
+    assert.isFalse(SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(impostor));
+    assert.isTrue(impostor.hasChildren);
+  });
+
+  it('recognizes an evaluated deferred module namespace', () => {
+    assert.isTrue(SDK.RemoteObject.RemoteObject.isEvaluatedDeferredModuleNamespace(deferredNamespace('evaluated')));
+    assert.isFalse(SDK.RemoteObject.RemoteObject.isEvaluatedDeferredModuleNamespace(deferredNamespace('linked')));
+    assert.isFalse(SDK.RemoteObject.RemoteObject.isEvaluatedDeferredModuleNamespace(
+        runtimeModel.createRemoteObject({type: Protocol.Runtime.RemoteObjectType.Object, className: 'Object'})));
+  });
+
+  it('leaves ordinary objects expandable', () => {
+    const ordinary = runtimeModel.createRemoteObject({
+      type: Protocol.Runtime.RemoteObjectType.Object,
+      className: 'Module',
+      description: 'Module',
+      objectId: '9' as Protocol.Runtime.RemoteObjectId,
+    });
+    assert.isTrue(ordinary.hasChildren);
+  });
+
   it('does not match ordinary module namespaces or plain objects', () => {
     const ordinary = runtimeModel.createRemoteObject({
       type: Protocol.Runtime.RemoteObjectType.Object,
@@ -629,8 +745,8 @@ describeWithEnvironment('deferred module namespaces', () => {
       objectId: '2' as Protocol.Runtime.RemoteObjectId,
     });
     assert.isFalse(SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(ordinary));
-    assert.isFalse(
-        SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(SDK.RemoteObject.RemoteObject.fromLocalObject({})));
+    assert.isFalse(SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(
+        SDK.RemoteObject.RemoteObject.fromLocalObject({})));
   });
 
   it('forwards generatePreview to Runtime.callFunctionOn', async () => {

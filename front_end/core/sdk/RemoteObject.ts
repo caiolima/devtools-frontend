@@ -85,6 +85,17 @@ export abstract class RemoteObject {
   }
 
   /**
+   * Returns `true` for a deferred module namespace object, run or not.
+   *
+   * Identity has to be established before trusting `[[ModuleStatus]]`, which is a name a page can
+   * put on any object; acting on the status alone would make an ordinary object render as a module.
+   * The subtype is the only signal here a page cannot fabricate.
+   */
+  static isDeferredModuleNamespace(object: RemoteObject|Protocol.Runtime.RemoteObject): boolean {
+    return object.subtype === Protocol.Runtime.RemoteObjectSubtype.Deferredmodule;
+  }
+
+  /**
    * Returns `true` for a deferred module namespace object (`import defer * as ns from ...`) whose
    * module hasn't been evaluated yet.
    *
@@ -92,19 +103,23 @@ export abstract class RemoteObject {
    * exports nor expand it eagerly. V8 flips `[[ModuleStatus]]` to `evaluated` once the module has
    * run, which is why this needs no per-objectId bookkeeping to stay correct across pauses.
    *
-   * Surfaces that fetch without `generatePreview` get no `[[ModuleStatus]]`, so we fall back to
-   * recognizing the `@@toStringTag` V8 installs on deferred namespaces and assume the module hasn't
-   * run. A preview means the backend already read the exports, so the module has run either way —
-   * which also keeps this correct against a V8 that doesn't report `[[ModuleStatus]]` at all.
+   * `[[ModuleStatus]]` rides along in the object's preview, so surfaces that fetch without
+   * `generatePreview` cannot tell the two states apart and assume the module hasn't run. Clicking
+   * through on a module that already ran is a no-op that repairs the row.
    */
   static isUnevaluatedDeferredModuleNamespace(object: RemoteObject|Protocol.Runtime.RemoteObject): boolean {
-    const status = RemoteObject.deferredModuleStatus(object);
-    if (status !== undefined) {
-      return status !== DeferredModuleStatus.EVALUATED;
+    if (!RemoteObject.isDeferredModuleNamespace(object)) {
+      return false;
     }
-    // If CDP ever grows a dedicated subtype for these, this is the only line that needs to change.
-    return !object.preview && object.type === Protocol.Runtime.RemoteObjectType.Object &&
-        object.className === DEFERRED_MODULE_NAMESPACE_CLASS_NAME;
+    const status = RemoteObject.deferredModuleStatus(object);
+    // Without a status we can't tell a module that has run from one that hasn't, except that a
+    // preview means the backend already read the exports, which only works by running the module.
+    return status !== undefined ? status !== DeferredModuleStatus.EVALUATED : !object.preview;
+  }
+
+  /** Returns `true` for a deferred module namespace whose module has run. */
+  static isEvaluatedDeferredModuleNamespace(object: RemoteObject|Protocol.Runtime.RemoteObject): boolean {
+    return RemoteObject.isDeferredModuleNamespace(object) && !RemoteObject.isUnevaluatedDeferredModuleNamespace(object);
   }
 
   static unserializableDescription(object: unknown): string|null {
@@ -193,7 +208,10 @@ export abstract class RemoteObject {
     }
     for (let i = 0; i < ownProperties.length; i++) {
       const property = ownProperties[i];
-      if (property.isAccessorProperty()) {
+      // Own accessors are normally supplied by the `accessorPropertiesOnly` request above. Only
+      // skip one when that request actually returned it, so that a disagreement between the two
+      // requests can't make a property disappear entirely.
+      if (property.isAccessorProperty() && propertiesMap.has(property.name)) {
         continue;
       }
       if (property.private || property.symbol) {
@@ -246,15 +264,14 @@ export abstract class RemoteObject {
     return null;
   }
 
-  callFunction<T, U>(
-      _functionDeclaration: (this: U, ...args: any[]) => T, _args?: Protocol.Runtime.CallArgument[],
-      _params?: CallFunctionParams|undefined): Promise<CallFunctionResult> {
+  callFunction<T, U>(_functionDeclaration: (this: U, ...args: any[]) => T, _args?: Protocol.Runtime.CallArgument[],
+                     _params?: CallFunctionParams|undefined): Promise<CallFunctionResult> {
     throw new Error('Not implemented');
   }
 
-  callFunctionJSON<T, U>(
-      _functionDeclaration: (this: U, ...args: any[]) => T, _args: Protocol.Runtime.CallArgument[]|undefined,
-      _params?: CallFunctionParams|undefined): Promise<T|null> {
+  callFunctionJSON<T, U>(_functionDeclaration: (this: U, ...args: any[]) => T,
+                         _args: Protocol.Runtime.CallArgument[]|undefined,
+                         _params?: CallFunctionParams|undefined): Promise<T|null> {
     throw new Error('Not implemented');
   }
 
@@ -398,7 +415,10 @@ export class RemoteObjectImpl extends RemoteObject {
   }
 
   override get hasChildren(): boolean {
-    return this.#hasChildren;
+    // Listing the exports of a module that hasn't run has nothing useful to show, and offering the
+    // affordance invites reading a binding, which runs the module. The row becomes expandable again
+    // as soon as `[[ModuleStatus]]` reports the module as evaluated.
+    return this.#hasChildren && !RemoteObject.isUnevaluatedDeferredModuleNamespace(this);
   }
 
   override get preview(): Protocol.Runtime.ObjectPreview|undefined {
@@ -559,9 +579,9 @@ export class RemoteObjectImpl extends RemoteObject {
     return undefined;
   }
 
-  override async callFunction<T, U>(
-      functionDeclaration: (this: U, ...args: any[]) => T, args?: Protocol.Runtime.CallArgument[],
-      params?: CallFunctionParams): Promise<CallFunctionResult> {
+  override async callFunction<T, U>(functionDeclaration: (this: U, ...args: any[]) => T,
+                                    args?: Protocol.Runtime.CallArgument[],
+                                    params?: CallFunctionParams): Promise<CallFunctionResult> {
     const response = await this.#runtimeAgent.invoke_callFunctionOn({
       objectId: this.#objectId,
       functionDeclaration: functionDeclaration.toString(),
@@ -580,9 +600,9 @@ export class RemoteObjectImpl extends RemoteObject {
     };
   }
 
-  override async callFunctionJSON<T, U>(
-      functionDeclaration: (this: U, ...args: any[]) => T, args: Protocol.Runtime.CallArgument[]|undefined,
-      params?: CallFunctionParams): Promise<T|null> {
+  override async callFunctionJSON<T, U>(functionDeclaration: (this: U, ...args: any[]) => T,
+                                        args: Protocol.Runtime.CallArgument[]|undefined,
+                                        params?: CallFunctionParams): Promise<T|null> {
     const response = await this.#runtimeAgent.invoke_callFunctionOn({
       objectId: this.#objectId,
       functionDeclaration: functionDeclaration.toString(),
@@ -1155,12 +1175,6 @@ const descriptionLengthSquareRegex = /\[([0-9]+)\]/;
 
 /** Internal property V8 reports for deferred module namespace objects. */
 const DEFERRED_MODULE_STATUS_PROPERTY_NAME = '[[ModuleStatus]]';
-
-/**
- * The `@@toStringTag` V8 installs on `JSDeferredModuleNamespace` objects, surfaced through
- * `Runtime.RemoteObject.className`. Ordinary module namespaces use `'Module'`.
- */
-const DEFERRED_MODULE_NAMESPACE_CLASS_NAME = 'Deferred Module';
 
 /** Values of the `[[ModuleStatus]]` internal property, mirroring V8's `Module::Status`. */
 export const enum DeferredModuleStatus {

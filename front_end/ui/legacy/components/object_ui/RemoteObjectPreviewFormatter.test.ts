@@ -29,8 +29,8 @@ describeWithEnvironment('RemoteObjectPreviewFormatter', () => {
     const renderText = (preview: Protocol.Runtime.ObjectPreview): string =>
         renderPreview(preview).replace(/\xa0/g, ' ');
 
-    function modulePreview(status: string, exports: Protocol.Runtime.PropertyPreview[] = []):
-        Protocol.Runtime.ObjectPreview {
+    function modulePreview(status: string,
+                           exports: Protocol.Runtime.PropertyPreview[] = []): Protocol.Runtime.ObjectPreview {
       return {
         type: Protocol.Runtime.ObjectPreviewType.Object,
         description: 'Deferred Module',

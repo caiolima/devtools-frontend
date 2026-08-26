@@ -15,7 +15,11 @@ import * as Components from '../utils/utils.js';
 
 import {CustomPreviewComponent} from './CustomPreviewComponent.js';
 import objectPopoverStyles from './objectPopover.css.js';
-import {ObjectPropertiesSectionWidget, renderPropertyValue, valueElementForFunctionDescription} from './ObjectPropertiesSection.js';
+import {
+  ObjectPropertiesSectionWidget,
+  renderPropertyValue,
+  valueElementForFunctionDescription,
+} from './ObjectPropertiesSection.js';
 import objectValueStyles from './objectValue.css.js';
 
 const UIStrings = {

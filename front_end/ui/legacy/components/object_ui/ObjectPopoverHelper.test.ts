@@ -38,6 +38,7 @@ describeWithEnvironment('ObjectPopoverHelper', () => {
     // Popovers fetch without previews, so only the class name identifies the namespace here.
     const object = runtimeModel.createRemoteObject({
       type: Protocol.Runtime.RemoteObjectType.Object,
+      subtype: Protocol.Runtime.RemoteObjectSubtype.Deferredmodule,
       className: 'Deferred Module',
       description: 'Deferred Module',
       objectId: 'ns' as Protocol.Runtime.RemoteObjectId,

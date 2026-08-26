@@ -103,6 +103,7 @@ interface ViewInput {
   onDeleteAll(): unknown;
   onAddExpression(): unknown;
   onExpand(e: WatchExpression, expanded: boolean): unknown;
+  onDeferredModuleEvaluated(e: WatchExpression, result: SDK.RemoteObject.CallFunctionResult): unknown;
   watchExpressions: WatchExpression[];
 }
 export interface WatchExpressionPromptViewInput {
@@ -182,7 +183,11 @@ export const DEFAULT_PROMPT_VIEW: PromptView = (input, _output, target) => {
                     title=${ifDefined(e.exceptionDetails?.exception?.description)}
                     >${i18nString(UIStrings.notAvailable)}</span>`
                   : ObjectUI.ObjectPropertiesSection.renderPropertyValue(
-                    e.result.object, Boolean(e.exceptionDetails), false /* showPreview */, input.linkifier,
+                    e.result.object, Boolean(e.exceptionDetails),
+                    // Watch rows show descriptions rather than previews, but a deferred module that
+                    // has run has nothing else to show for the exports it just gained.
+                    SDK.RemoteObject.RemoteObject.isEvaluatedDeferredModuleNamespace(e.result.object),
+                    input.linkifier,
                     false /* isSyntheticProperty */, undefined /* variableName */,
                     undefined /* includeNullOrUndefined */, /* useCustomPreview */ true)}
             </div>
@@ -353,6 +358,8 @@ export const DEFAULT_VIEW: View = (input, output, target) => {
           class=${classMap({'watch-expression-tree-item': true, 'watch-expression-editing': e.editing })}
           @keydown=${onExpressionKeydown.bind(undefined, e)}
           @expand=${(event: UI.TreeOutline.TreeViewElement.ExpandEvent) => input.onExpand(e, event.detail.expanded)}
+          @deferred-module-evaluated=${(event: CustomEvent<SDK.RemoteObject.CallFunctionResult>) =>
+            input.onDeferredModuleEvaluated(e, event.detail)}
           role=treeitem>
             <devtools-widget ${widget(WatchExpressionPromptWidget, {
               expression: e,
@@ -559,6 +566,14 @@ export class WatchExpressionsSidebarPane extends UI.Widget.VBox implements UI.Ac
           this.requestUpdate();
         }
       },
+      onDeferredModuleEvaluated: async(e: WatchExpression, result: SDK.RemoteObject.CallFunctionResult):
+          Promise<void> => {
+            if (!result.object || !e.expression) {
+              return;
+            }
+            await e.deferredModuleEvaluated(result.object, this.#getExpansionTracker(e.expression));
+            this.requestUpdate();
+          },
     },
                {}, this.contentElement);
   }
@@ -637,6 +652,31 @@ export class WatchExpression {
 
   get expression(): string|null {
     return this.#expression;
+  }
+
+  /**
+   * Adopts the namespace of a deferred module the user chose to evaluate from this row, so that the
+   * value and its children reflect the module that just ran. The object already carries a fresh
+   * preview, so nothing needs re-evaluating in the page.
+   */
+  async deferredModuleEvaluated(
+      object: SDK.RemoteObject.RemoteObject,
+      expandController: ObjectUI.ObjectPropertiesSection.ObjectTreeExpansionTracker,
+      ): Promise<void> {
+    const previous = this.#result;
+    const objectTree = new ObjectUI.ObjectPropertiesSection.ObjectTree(object, {
+      readOnly: true,
+      propertiesMode: ObjectUI.ObjectPropertiesSection.ObjectPropertiesMode.OWN_AND_INTERNAL_AND_INHERITED,
+      expansionTracker: expandController,
+    });
+    await expandController.apply(objectTree);
+    // The row renders `result.children`, which only gets populated when an `expand` event fires. A
+    // row that is already open won't fire one again, so carry the populated state over or it would
+    // render blank until the user collapses and re-expands it.
+    if (previous?.children && !objectTree.children) {
+      await objectTree.populateChildrenIfNeeded();
+    }
+    this.#result = objectTree;
   }
 
   async setExpression(

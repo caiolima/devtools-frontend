@@ -81,6 +81,7 @@ describeWithEnvironment('ScopeChainSidebarPane', () => {
 
     const deferredNamespace: Protocol.Runtime.RemoteObject = {
       type: Protocol.Runtime.RemoteObjectType.Object,
+      subtype: Protocol.Runtime.RemoteObjectSubtype.Deferredmodule,
       className: 'Deferred Module',
       description: 'Deferred Module',
       objectId: 'DEFERRED_NS' as Protocol.Runtime.RemoteObjectId,
@@ -95,8 +96,8 @@ describeWithEnvironment('ScopeChainSidebarPane', () => {
       },
     };
     const functionScopeObject = backend.createSimpleRemoteObject([{name: 'ns', value: deferredNamespace}]);
-    const callFrame = await backend.createCallFrame(
-        target, {url: 'file:///tmp/example.js', content: source}, scopes, null, [functionScopeObject]);
+    const callFrame = await backend.createCallFrame(target, {url: 'file:///tmp/example.js', content: source}, scopes,
+                                                    null, [functionScopeObject]);
 
     const view = createViewFunctionStub(Sources.ScopeChainSidebarPane.ScopeChainSidebarPane);
     const pane = new Sources.ScopeChainSidebarPane.ScopeChainSidebarPane(undefined, view);
@@ -116,11 +117,10 @@ describeWithEnvironment('ScopeChainSidebarPane', () => {
     assert.exists(namespaceProperty?.property.value);
 
     // Showing the scope must not have run the module, and the row must offer to run it explicitly.
-    assert.isTrue(SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(
-        namespaceProperty.property.value));
+    assert.isTrue(SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(namespaceProperty.property.value));
     const container = document.createElement('div');
     render(ObjectUI.ObjectPropertiesSection.renderPropertyValue(namespaceProperty.property.value,
-                                                               /* wasThrown= */ false, /* showPreview= */ true),
+                                                                /* wasThrown= */ false, /* showPreview= */ true),
            container);
     renderElementIntoDOM(container, {allowMultipleChildren: true});
     await UI.Widget.Widget.allUpdatesComplete;

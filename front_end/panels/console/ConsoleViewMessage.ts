@@ -820,6 +820,7 @@ export class ConsoleViewMessage implements ConsoleViewportElement {
       case 'arraybuffer':
       case 'blob':
       case 'dataview':
+      case 'deferredmodule':
       case 'generator':
       case 'iterator':
       case 'map':
@@ -894,6 +895,21 @@ export class ConsoleViewMessage implements ConsoleViewportElement {
     // A deferred module namespace can't be previewed without running the module, so it renders
     // behind an explicit opt-in instead.
     const isUnevaluatedDeferredModule = SDK.RemoteObject.RemoteObject.isUnevaluatedDeferredModuleNamespace(obj);
+    // Whatever this ends up returning, so that evaluating the module can swap the whole thing for a
+    // freshly formatted one — the namespace only becomes expandable once its module has run.
+    let root: HTMLElement = titleElement;
+    if (isUnevaluatedDeferredModule) {
+      titleElement.addEventListener('deferred-module-evaluated', (event: Event) => {
+        const {object} = (event as CustomEvent<SDK.RemoteObject.CallFunctionResult>).detail;
+        if (!object) {
+          return;
+        }
+        const replacement = this.formatParameterAsObject(object, includePreview);
+        root.replaceWith(replacement);
+        this.messageResized({data: replacement} as unknown as
+                            Common.EventTarget.EventTargetEvent<HTMLElement|UI.TreeOutline.TreeElement>);
+      });
+    }
     const renderPreview = (includeNullOrUndefined: boolean): void => {
       if (isUnevaluatedDeferredModule) {
         titleElement.classList.add('console-object-preview');
@@ -932,20 +948,7 @@ export class ConsoleViewMessage implements ConsoleViewportElement {
     }
 
     const container = document.createElement('span');
-    if (isUnevaluatedDeferredModule) {
-      // The properties below were fetched before the module ran, so re-format from scratch once
-      // the user evaluates it.
-      container.addEventListener('deferred-module-evaluated', (event: Event) => {
-        const {object} = (event as CustomEvent<SDK.RemoteObject.CallFunctionResult>).detail;
-        if (!object) {
-          return;
-        }
-        const replacement = this.formatParameterAsObject(object, includePreview);
-        container.replaceWith(replacement);
-        this.messageResized({data: replacement} as unknown as
-                            Common.EventTarget.EventTargetEvent<HTMLElement|UI.TreeOutline.TreeElement>);
-      });
-    }
+    root = container;
     const section = new ObjectUI.ObjectPropertiesSection.ObjectPropertiesSectionWidget();
     section.markAsRoot();
     const treeElement = section.element;

@@ -38,6 +38,90 @@ describeWithEnvironment('WatchExpression', () => {
     assert.isTrue(watchExpression.result?.readOnly);
   });
 
+  it('adopts the namespace of a deferred module evaluated from its row', async () => {
+    const stale = SDK.RemoteObject.RemoteObject.fromLocalObject({stale: 1});
+
+    const executionContext = sinon.createStubInstance(SDK.RuntimeModel.ExecutionContext);
+    const debuggerModel = sinon.createStubInstance(SDK.DebuggerModel.DebuggerModel);
+    debuggerModel.selectedCallFrame.returns(null);
+    executionContext.debuggerModel = debuggerModel;
+    executionContext.evaluateWithSelectedFrameFallback.resolves({object: stale, exceptionDetails: undefined});
+    sinon.stub(UI.Context.Context.instance(), 'flavor').returns(executionContext);
+
+    const expansionTracker = new ObjectUI.ObjectPropertiesSection.ObjectTreeExpansionTracker();
+    const watchExpression = new Sources.WatchExpressionsSidebarPane.WatchExpression();
+    await watchExpression.setExpression('ns', expansionTracker);
+    assert.strictEqual(watchExpression.result?.object, stale);
+
+    const evaluated = SDK.RemoteObject.RemoteObject.fromLocalObject({fresh: 2});
+    await watchExpression.deferredModuleEvaluated(evaluated, expansionTracker);
+
+    assert.strictEqual(watchExpression.result?.object, evaluated);
+    assert.isTrue(watchExpression.result?.readOnly);
+  });
+
+  it('keeps an already expanded row populated after evaluating a deferred module', async () => {
+    const stale = SDK.RemoteObject.RemoteObject.fromLocalObject({stale: 1});
+
+    const executionContext = sinon.createStubInstance(SDK.RuntimeModel.ExecutionContext);
+    const debuggerModel = sinon.createStubInstance(SDK.DebuggerModel.DebuggerModel);
+    debuggerModel.selectedCallFrame.returns(null);
+    executionContext.debuggerModel = debuggerModel;
+    executionContext.evaluateWithSelectedFrameFallback.resolves({object: stale, exceptionDetails: undefined});
+    sinon.stub(UI.Context.Context.instance(), 'flavor').returns(executionContext);
+
+    const expansionTracker = new ObjectUI.ObjectPropertiesSection.ObjectTreeExpansionTracker();
+    const watchExpression = new Sources.WatchExpressionsSidebarPane.WatchExpression();
+    await watchExpression.setExpression('ns', expansionTracker);
+
+    // Expanding the row goes through `onExpand`, which populates children but does not mark the
+    // tree as expanded, so the expansion tracker never learns about it.
+    await watchExpression.result!.populateChildrenIfNeeded();
+    assert.exists(watchExpression.result?.children);
+
+    const evaluated = SDK.RemoteObject.RemoteObject.fromLocalObject({fresh: 2});
+    await watchExpression.deferredModuleEvaluated(evaluated, expansionTracker);
+
+    // No `expand` event fires for a row that is already open, so the replacement tree has to come
+    // back populated or the row renders blank.
+    assert.exists(watchExpression.result?.children, 'expanded row must not go blank after evaluating');
+    assert.deepEqual(watchExpression.result?.children?.properties?.map(p => p.name), ['fresh']);
+  });
+
+  it('refreshes the row when a deferred module is evaluated inside it', async () => {
+    Common.Settings.Settings.instance().createLocalSetting<string[]>('watch-expressions', []).set(['ns']);
+    const stale = SDK.RemoteObject.RemoteObject.fromLocalObject({stale: 1});
+
+    const executionContext = sinon.createStubInstance(SDK.RuntimeModel.ExecutionContext);
+    const debuggerModel = sinon.createStubInstance(SDK.DebuggerModel.DebuggerModel);
+    debuggerModel.selectedCallFrame.returns(null);
+    executionContext.debuggerModel = debuggerModel;
+    executionContext.evaluateWithSelectedFrameFallback.resolves({object: stale, exceptionDetails: undefined});
+    sinon.stub(UI.Context.Context.instance(), 'flavor').returns(executionContext);
+
+    const pane = new Sources.WatchExpressionsSidebarPane.WatchExpressionsSidebarPane();
+    UI.Context.Context.instance().setFlavor(SDK.RuntimeModel.ExecutionContext, executionContext);
+    renderElementIntoDOM(pane);
+    await raf();
+    await pane.updateComplete;
+    assert.strictEqual(pane.watchExpressions[0].result?.object, stale);
+
+    // The button lives inside the row, so the event has to reach the pane from the row's subtree.
+    const treeElement = pane.contentElement.querySelector('devtools-tree');
+    const row = treeElement?.shadowRoot?.querySelector('.watch-expression-tree-item');
+    assert.exists(row, 'expected a rendered watch expression row');
+    const evaluated = SDK.RemoteObject.RemoteObject.fromLocalObject({fresh: 2});
+    row.dispatchEvent(new CustomEvent('deferred-module-evaluated', {
+      bubbles: true,
+      composed: true,
+      detail: {object: evaluated, wasThrown: false},
+    }));
+    await raf();
+    await pane.updateComplete;
+
+    assert.strictEqual(pane.watchExpressions[0].result?.object, evaluated);
+  });
+
   it('shows "No watch expressions" when empty', async () => {
     Common.Settings.Settings.instance().createLocalSetting<string[]>('watch-expressions', []).set([]);
 
