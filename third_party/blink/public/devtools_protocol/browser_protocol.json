@@ -33065,6 +33065,7 @@
                                 "dataview",
                                 "webassemblymemory",
                                 "wasmvalue",
+                                "deferredmodule",
                                 "trustedtype"
                             ]
                         },
@@ -33184,6 +33185,7 @@
                                 "dataview",
                                 "webassemblymemory",
                                 "wasmvalue",
+                                "deferredmodule",
                                 "trustedtype"
                             ]
                         },
@@ -33280,6 +33282,7 @@
                                 "dataview",
                                 "webassemblymemory",
                                 "wasmvalue",
+                                "deferredmodule",
                                 "trustedtype"
                             ]
                         }

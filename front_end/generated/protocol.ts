@@ -21935,6 +21935,7 @@ export namespace Runtime {
     Dataview = 'dataview',
     Webassemblymemory = 'webassemblymemory',
     Wasmvalue = 'wasmvalue',
+    Deferredmodule = 'deferredmodule',
     Trustedtype = 'trustedtype',
   }
 
@@ -22029,6 +22030,7 @@ export namespace Runtime {
     Dataview = 'dataview',
     Webassemblymemory = 'webassemblymemory',
     Wasmvalue = 'wasmvalue',
+    Deferredmodule = 'deferredmodule',
     Trustedtype = 'trustedtype',
   }
 
@@ -22094,6 +22096,7 @@ export namespace Runtime {
     Dataview = 'dataview',
     Webassemblymemory = 'webassemblymemory',
     Wasmvalue = 'wasmvalue',
+    Deferredmodule = 'deferredmodule',
     Trustedtype = 'trustedtype',
   }
 
