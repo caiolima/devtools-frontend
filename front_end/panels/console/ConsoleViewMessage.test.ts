@@ -246,6 +246,45 @@ describeWithEnvironment('ConsoleViewMessage', () => {
       assert.isFalse(section.objectTree.readOnly);
     });
 
+    it('logs a deferred module namespace as unevaluated and not expandable', async () => {
+      const target = createTarget();
+      const runtimeModel = target.model(SDK.RuntimeModel.RuntimeModel);
+      assert.exists(runtimeModel);
+      const remoteObject = runtimeModel.createRemoteObject({
+        type: Protocol.Runtime.RemoteObjectType.Object,
+        subtype: Protocol.Runtime.RemoteObjectSubtype.Deferredmodule,
+        className: 'Deferred Module',
+        description: 'Deferred Module',
+        objectId: '1' as Protocol.Runtime.RemoteObjectId,
+        preview: {
+          type: Protocol.Runtime.ObjectPreviewType.Object,
+          subtype: Protocol.Runtime.ObjectPreviewSubtype.Deferredmodule,
+          description: 'Deferred Module',
+          overflow: false,
+          properties: [
+            {name: '[[ModuleStatus]]', type: Protocol.Runtime.PropertyPreviewType.String, value: 'linked'},
+          ],
+        },
+      });
+      const rawMessage = new SDK.ConsoleModel.ConsoleMessage(
+          runtimeModel,
+          Common.Console.FrontendMessageSource.ConsoleAPI,
+          Protocol.Log.LogEntryLevel.Info,
+          '',
+          {parameters: [remoteObject]},
+      );
+      const {message} = createConsoleViewMessageWithStubDeps(rawMessage);
+      const messageElement = message.toMessageElement();
+      renderElementIntoDOM(messageElement);
+      await UI.Widget.Widget.allUpdatesComplete;
+      await raf();
+
+      // The subtype has to be registered in `formatParameter`, or the message falls through to the
+      // plain-value branch and the preview never renders.
+      assert.include(messageElement.deepTextContent(), '<unevaluated>');
+      assert.notExists(messageElement.querySelector('.console-view-object-properties-section'));
+    });
+
     it('formats console.dir(document.__proto__) without exception', async () => {
       const target = createTarget();
       const runtimeModel = target.model(SDK.RuntimeModel.RuntimeModel);

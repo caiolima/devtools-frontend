@@ -13,6 +13,7 @@ import {assertScreenshot, dispatchClickEvent, raf, renderElementIntoDOM} from '.
 import {createTarget, describeWithEnvironment} from '../../../../testing/EnvironmentHelpers.js';
 import {expectCall} from '../../../../testing/ExpectStubCall.js';
 import {setupLocaleHooks} from '../../../../testing/LocaleHelpers.js';
+import {MockCDPConnection} from '../../../../testing/MockCDPConnection.js';
 import {setupSettingsHooks} from '../../../../testing/SettingsHelpers.js';
 import {html, render} from '../../../lit/lit.js';
 import * as UI from '../../legacy.js';
@@ -1413,5 +1414,107 @@ describeWithEnvironment('ObjectTreeExpansionTracker', () => {
     assert.strictEqual(thud.childCount(), 1);
     const wibble = thud.childAt(0)!;
     assert.isFalse(wibble.expanded);
+  });
+});
+
+describeWithEnvironment('deferred module namespaces', () => {
+  let connection: MockCDPConnection;
+  let runtimeModel: SDK.RuntimeModel.RuntimeModel;
+
+  beforeEach(() => {
+    connection = new MockCDPConnection();
+    const target = createTarget({connection});
+    runtimeModel = target.model(SDK.RuntimeModel.RuntimeModel) as SDK.RuntimeModel.RuntimeModel;
+  });
+
+  function objectTreeFor(object: SDK.RemoteObject.RemoteObject): ObjectUI.ObjectPropertiesSection.ObjectTree {
+    return new ObjectUI.ObjectPropertiesSection.ObjectTree(object, {
+      readOnly: true,
+      propertiesMode: ObjectUI.ObjectPropertiesSection.ObjectPropertiesMode.OWN_AND_INTERNAL_AND_INHERITED,
+    });
+  }
+
+  it('hides the module status from the children of an evaluated namespace', async () => {
+    connection.setSuccessHandler('Runtime.getProperties', (req: Protocol.Runtime.GetPropertiesRequest) => {
+      if (req.accessorPropertiesOnly) {
+        return {result: []} as unknown as Protocol.Runtime.GetPropertiesResponse;
+      }
+      return {
+        result: [{
+          name: 'foo',
+          configurable: true,
+          enumerable: true,
+          isOwn: true,
+          value: {type: 'number', value: 1, description: '1'},
+        }],
+        internalProperties: [{name: '[[ModuleStatus]]', value: {type: 'string', value: 'evaluated'}}],
+      } as unknown as Protocol.Runtime.GetPropertiesResponse;
+    });
+    const evaluated = runtimeModel.createRemoteObject({
+      type: Protocol.Runtime.RemoteObjectType.Object,
+      subtype: Protocol.Runtime.RemoteObjectSubtype.Deferredmodule,
+      className: 'Deferred Module',
+      description: 'Deferred Module',
+      objectId: 'ns' as Protocol.Runtime.RemoteObjectId,
+      preview: {
+        type: Protocol.Runtime.ObjectPreviewType.Object,
+        description: 'Deferred Module',
+        overflow: false,
+        properties: [{name: '[[ModuleStatus]]', type: Protocol.Runtime.PropertyPreviewType.String, value: 'evaluated'}],
+      },
+    });
+
+    const {properties, internalProperties} = await objectTreeFor(evaluated).populateChildrenIfNeeded();
+
+    assert.deepEqual(properties?.map(p => p.name), ['foo']);
+    assert.isEmpty(internalProperties ?? []);
+  });
+
+  it('hides the module status even when the status itself is unknown', async () => {
+    // Watch expressions fetch without `generatePreview`, so the namespace carries no status and is
+    // expandable. Its children must still not expose the internal property.
+    connection.setSuccessHandler('Runtime.getProperties', (req: Protocol.Runtime.GetPropertiesRequest) => {
+      if (req.accessorPropertiesOnly) {
+        return {result: []} as unknown as Protocol.Runtime.GetPropertiesResponse;
+      }
+      return {
+        result: [],
+        internalProperties: [{name: '[[ModuleStatus]]', value: {type: 'string', value: 'linked'}}],
+      } as unknown as Protocol.Runtime.GetPropertiesResponse;
+    });
+    const noPreview = runtimeModel.createRemoteObject({
+      type: Protocol.Runtime.RemoteObjectType.Object,
+      subtype: Protocol.Runtime.RemoteObjectSubtype.Deferredmodule,
+      className: 'Deferred Module',
+      description: 'Deferred Module',
+      objectId: 'ns' as Protocol.Runtime.RemoteObjectId,
+    });
+
+    const {internalProperties} = await objectTreeFor(noPreview).populateChildrenIfNeeded();
+
+    assert.isEmpty(internalProperties ?? []);
+  });
+
+  it('keeps internal properties of ordinary objects', async () => {
+    connection.setSuccessHandler('Runtime.getProperties', (req: Protocol.Runtime.GetPropertiesRequest) => {
+      if (req.accessorPropertiesOnly) {
+        return {result: []} as unknown as Protocol.Runtime.GetPropertiesResponse;
+      }
+      return {
+        result: [],
+        internalProperties: [{name: '[[PromiseState]]', value: {type: 'string', value: 'fulfilled'}}],
+      } as unknown as Protocol.Runtime.GetPropertiesResponse;
+    });
+    const promise = runtimeModel.createRemoteObject({
+      type: Protocol.Runtime.RemoteObjectType.Object,
+      subtype: Protocol.Runtime.RemoteObjectSubtype.Promise,
+      className: 'Promise',
+      description: 'Promise',
+      objectId: 'p' as Protocol.Runtime.RemoteObjectId,
+    });
+
+    const {internalProperties} = await objectTreeFor(promise).populateChildrenIfNeeded();
+
+    assert.deepEqual(internalProperties?.map(p => p.name), ['[[PromiseState]]']);
   });
 });

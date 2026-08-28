@@ -557,3 +557,91 @@ describeWithEnvironment('RemoteObject TypedArray', () => {
     assert.strictEqual(SDK.RemoteObject.RemoteObject.arrayNameFromDescription('Int32Array[20]'), 'Int32Array');
   });
 });
+
+describeWithEnvironment('deferred module namespaces', () => {
+  let runtimeModel: SDK.RuntimeModel.RuntimeModel;
+
+  function deferredNamespace(status?: string, objectId = '1'): SDK.RemoteObject.RemoteObject {
+    const preview: Protocol.Runtime.ObjectPreview|undefined = status === undefined ? undefined : {
+      type: Protocol.Runtime.ObjectPreviewType.Object,
+      subtype: Protocol.Runtime.ObjectPreviewSubtype.Deferredmodule,
+      description: 'Deferred Module',
+      overflow: false,
+      properties: [{name: '[[ModuleStatus]]', type: Protocol.Runtime.PropertyPreviewType.String, value: status}],
+    };
+    return runtimeModel.createRemoteObject({
+      type: Protocol.Runtime.RemoteObjectType.Object,
+      subtype: Protocol.Runtime.RemoteObjectSubtype.Deferredmodule,
+      className: 'Deferred Module',
+      description: 'Deferred Module',
+      objectId: objectId as Protocol.Runtime.RemoteObjectId,
+      preview,
+    });
+  }
+
+  beforeEach(() => {
+    const target = createTarget();
+    runtimeModel = target.model(SDK.RuntimeModel.RuntimeModel) as SDK.RuntimeModel.RuntimeModel;
+  });
+
+  it('is evaluated only when the status says so', () => {
+    for (const status of ['linked', 'evaluating', 'errored']) {
+      assert.isFalse(SDK.RemoteObject.RemoteObject.isEvaluatedDeferredModuleNamespace(deferredNamespace(status)),
+                     status);
+    }
+    assert.isTrue(SDK.RemoteObject.RemoteObject.isEvaluatedDeferredModuleNamespace(deferredNamespace('evaluated')));
+  });
+
+  it('assumes the module has not run when no preview was requested', () => {
+    // Watch expressions and popovers fetch without `generatePreview`, so no status is available.
+    assert.isFalse(SDK.RemoteObject.RemoteObject.isEvaluatedDeferredModuleNamespace(deferredNamespace()));
+  });
+
+  it('is not expandable until the module has been evaluated', () => {
+    assert.isFalse(deferredNamespace('linked').hasChildren);
+    assert.isFalse(deferredNamespace('evaluating').hasChildren);
+    assert.isFalse(deferredNamespace('errored').hasChildren);
+    assert.isTrue(deferredNamespace('evaluated').hasChildren);
+  });
+
+  it('stays expandable when the status is unknown', () => {
+    // Watch expressions and popovers fetch without `generatePreview`, so there is no status to read.
+    // Fetching properties is side-effect free, so the row behaves like any other object: it opens
+    // onto the exports if the module has run, and onto nothing if it hasn't.
+    assert.isTrue(deferredNamespace().hasChildren);
+  });
+
+  it('ignores an object duck-typing a deferred module namespace', () => {
+    // A code can set `Symbol.toStringTag` to 'Deferred Module' and define an own property named
+    // `[[ModuleStatus]]`; both reach the frontend looking authentic. Only the subtype cannot be
+    // forged, so a duck-typed object must stay an ordinary, expandable object.
+    const duckTyped = runtimeModel.createRemoteObject({
+      type: Protocol.Runtime.RemoteObjectType.Object,
+      className: 'Deferred Module',
+      description: 'Deferred Module',
+      objectId: '8' as Protocol.Runtime.RemoteObjectId,
+      preview: {
+        type: Protocol.Runtime.ObjectPreviewType.Object,
+        description: 'Deferred Module',
+        overflow: false,
+        properties: [{name: '[[ModuleStatus]]', type: Protocol.Runtime.PropertyPreviewType.String, value: 'linked'}],
+      },
+    });
+
+    assert.isFalse(SDK.RemoteObject.RemoteObject.isEvaluatedDeferredModuleNamespace(duckTyped));
+    assert.isTrue(duckTyped.hasChildren);
+  });
+
+  it('does not match ordinary module namespaces or plain objects', () => {
+    const ordinary = runtimeModel.createRemoteObject({
+      type: Protocol.Runtime.RemoteObjectType.Object,
+      className: 'Module',
+      description: 'Module',
+      objectId: '2' as Protocol.Runtime.RemoteObjectId,
+    });
+    assert.isFalse(SDK.RemoteObject.RemoteObject.isEvaluatedDeferredModuleNamespace(ordinary));
+    assert.isTrue(ordinary.hasChildren);
+    assert.isFalse(SDK.RemoteObject.RemoteObject.isEvaluatedDeferredModuleNamespace(
+        SDK.RemoteObject.RemoteObject.fromLocalObject({})));
+  });
+});

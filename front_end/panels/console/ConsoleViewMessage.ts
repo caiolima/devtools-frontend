@@ -823,6 +823,7 @@ export class ConsoleViewMessage implements ConsoleViewportElement {
       case 'arraybuffer':
       case 'blob':
       case 'dataview':
+      case 'deferredmodule':
       case 'generator':
       case 'iterator':
       case 'map':

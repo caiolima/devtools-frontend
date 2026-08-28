@@ -24,6 +24,83 @@ describeWithEnvironment('RemoteObjectPreviewFormatter', () => {
     return container.textContent || '';
   }
 
+  describe('deferred module namespaces', () => {
+    // The formatter separates the description from the body with a non-breaking space.
+    const renderText = (preview: Protocol.Runtime.ObjectPreview): string =>
+        renderPreview(preview).replace(/\xa0/g, ' ');
+
+    function modulePreview(status: string,
+                           exports: Protocol.Runtime.PropertyPreview[] = []): Protocol.Runtime.ObjectPreview {
+      return {
+        type: Protocol.Runtime.ObjectPreviewType.Object,
+        subtype: Protocol.Runtime.ObjectPreviewSubtype.Deferredmodule,
+        description: 'Deferred Module',
+        overflow: false,
+        properties: [
+          ...exports,
+          {name: '[[ModuleStatus]]', type: Protocol.Runtime.PropertyPreviewType.String, value: status},
+        ],
+      };
+    }
+
+    it('shows <unevaluated> for a module that has not run', () => {
+      assert.strictEqual(renderText(modulePreview('linked')), 'Deferred Module {<unevaluated>}');
+      assert.strictEqual(renderText(modulePreview('evaluating')), 'Deferred Module {<unevaluated>}');
+    });
+
+    it('shows <errored> for a module that threw', () => {
+      assert.strictEqual(renderText(modulePreview('errored')), 'Deferred Module {<errored>}');
+    });
+
+    it('never leaks export names of a module that has not run', () => {
+      const withExports = modulePreview('linked', [
+        {name: 'a', type: Protocol.Runtime.PropertyPreviewType.String},
+        {name: 'foo', type: Protocol.Runtime.PropertyPreviewType.String},
+      ]);
+      assert.strictEqual(renderText(withExports), 'Deferred Module {<unevaluated>}');
+    });
+
+    it('leaves a same-named property of an ordinary object alone', () => {
+      // A page can define an own property literally named `[[ModuleStatus]]`. Without the subtype
+      // there is nothing to say it is a module, so it must render as an ordinary property.
+      const impostor: Protocol.Runtime.ObjectPreview = {
+        type: Protocol.Runtime.ObjectPreviewType.Object,
+        description: 'Object',
+        overflow: false,
+        properties: [
+          {name: '[[ModuleStatus]]', type: Protocol.Runtime.PropertyPreviewType.String, value: 'linked'},
+          {name: 'a', type: Protocol.Runtime.PropertyPreviewType.Number, value: '1'},
+        ],
+      };
+
+      const text = renderText(impostor);
+      assert.notInclude(text, '<unevaluated>');
+      assert.include(text, '[[ModuleStatus]]');
+      assert.include(text, 'a: 1');
+    });
+
+    it('hides an evaluated status only for an actual namespace', () => {
+      const impostor: Protocol.Runtime.ObjectPreview = {
+        type: Protocol.Runtime.ObjectPreviewType.Object,
+        description: 'Object',
+        overflow: false,
+        properties: [
+          {name: '[[ModuleStatus]]', type: Protocol.Runtime.PropertyPreviewType.String, value: 'evaluated'},
+        ],
+      };
+
+      assert.include(renderText(impostor), '[[ModuleStatus]]');
+    });
+
+    it('shows the exports and hides the status once the module is evaluated', () => {
+      const evaluated = modulePreview('evaluated', [
+        {name: 'a', type: Protocol.Runtime.PropertyPreviewType.Number, value: '1'},
+        {name: 'foo', type: Protocol.Runtime.PropertyPreviewType.Function, value: ''},
+      ]);
+      assert.strictEqual(renderText(evaluated), 'Deferred Module {a: 1, foo: ƒ}');
+    });
+  });
+
   it('formats array values on Array.prototype[]', () => {
     const scenarios = [
       {

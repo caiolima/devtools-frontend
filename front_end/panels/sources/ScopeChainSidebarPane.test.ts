@@ -7,6 +7,7 @@ import sinon from 'sinon';
 
 import * as Common from '../../core/common/common.js';
 import * as SDK from '../../core/sdk/sdk.js';
+import * as Protocol from '../../generated/protocol.js';
 import * as Bindings from '../../models/bindings/bindings.js';
 import * as StackTrace from '../../models/stack_trace/stack_trace.js';
 import * as Workspace from '../../models/workspace/workspace.js';
@@ -79,6 +80,49 @@ describe('ScopeChainSidebarPane', () => {
     tree?.getInternalTreeOutlineForTest().focus();
     await raf();
     await assertScreenshot('sources/scope-chain-sidebar-pane.png');
+  });
+
+  it('shows a deferred module namespace as unevaluated and never runs the module', async () => {
+    const source = 'function f(a) { debugger } f(1)';
+    const scopes = '          {              }';
+    parseScopeChain(scopes);
+
+    const deferredNamespace: Protocol.Runtime.RemoteObject = {
+      type: Protocol.Runtime.RemoteObjectType.Object,
+      subtype: Protocol.Runtime.RemoteObjectSubtype.Deferredmodule,
+      className: 'Deferred Module',
+      description: 'Deferred Module',
+      objectId: 'DEFERRED_NS' as Protocol.Runtime.RemoteObjectId,
+      preview: {
+        type: Protocol.Runtime.ObjectPreviewType.Object,
+        subtype: Protocol.Runtime.ObjectPreviewSubtype.Deferredmodule,
+        description: 'Deferred Module',
+        overflow: false,
+        properties: [{name: '[[ModuleStatus]]', type: Protocol.Runtime.PropertyPreviewType.String, value: 'linked'}],
+      },
+    };
+    const functionScopeObject = backend.createSimpleRemoteObject([{name: 'ns', value: deferredNamespace}]);
+    const callFrame = await backend.createCallFrame(target, {url: 'file:///tmp/example.js', content: source}, scopes,
+                                                    null, [functionScopeObject]);
+
+    const view = createViewFunctionStub(Sources.ScopeChainSidebarPane.ScopeChainSidebarPane);
+    const pane = new Sources.ScopeChainSidebarPane.ScopeChainSidebarPane(undefined, view);
+    renderElementIntoDOM(pane.contentElement);
+
+    pane.flavorChanged(StackTrace.StackTrace.DebuggableFrameFlavor.for({sdkFrame: callFrame, line: 0, column: 0}));
+    await view.nextInput;
+    while (!view.input.scopeChain) {
+      await view.nextInput;
+    }
+
+    const {objectTree} = view.input.scopeChain![0];
+    const {properties} = await objectTree.populateChildrenIfNeeded();
+    const namespaceProperty = properties?.find(({property}) => property.name === 'ns');
+    assert.exists(namespaceProperty?.property.value);
+
+    // Showing the scope must neither run the module nor offer to expand it.
+    assert.isFalse(SDK.RemoteObject.RemoteObject.isEvaluatedDeferredModuleNamespace(namespaceProperty.property.value));
+    assert.isFalse(namespaceProperty.property.value.hasChildren);
   });
 
   it('validates object property widgets are not readonly', async () => {

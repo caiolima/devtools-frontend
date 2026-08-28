@@ -130,6 +130,15 @@ export class RemoteObjectPreviewFormatter {
           Generator<PropertyPreviewValue> {
     const properties = preview.properties.filter(p => p.type !== 'accessor')
                            .sort(RemoteObjectPreviewFormatter.objectPropertyComparator);
+
+    const isDeferredModule = preview.subtype === Protocol.Runtime.ObjectPreviewSubtype.Deferredmodule;
+    const moduleStatus =
+        isDeferredModule ? properties.find(p => p.name === InternalName.MODULE_STATUS)?.value : undefined;
+    if (moduleStatus !== undefined && moduleStatus !== 'evaluated') {
+      yield {name: moduleStatus === 'errored' ? '<errored>' : '<unevaluated>'};
+      return;
+    }
+
     for (let i = 0; i < properties.length; ++i) {
       const property = properties[i];
       const name = property.name;
@@ -148,6 +157,8 @@ export class RemoteObjectPreviewFormatter {
         yield {name: '<' + property.value + '>', value: property.value !== 'pending' ? promiseResult : undefined};
       } else if (preview.subtype === 'generator' && name === InternalName.GENERATOR_STATE) {
         yield {name: '<' + property.value + '>'};
+      } else if (isDeferredModule && name === InternalName.MODULE_STATUS) {
+        continue;
       } else if (name === InternalName.PRIMITIVE_VALUE) {
         yield {value: property};
       } else if (name === InternalName.WEAK_REF_TARGET) {
@@ -292,6 +303,7 @@ export class RemoteObjectPreviewFormatter {
 
 const enum InternalName {
   GENERATOR_STATE = '[[GeneratorState]]',
+  MODULE_STATUS = '[[ModuleStatus]]',
   PRIMITIVE_VALUE = '[[PrimitiveValue]]',
   PROMISE_STATE = '[[PromiseState]]',
   PROMISE_RESULT = '[[PromiseResult]]',

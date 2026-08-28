@@ -74,6 +74,24 @@ export abstract class RemoteObject {
     return Boolean(matches?.[1] === '0');
   }
 
+  /**
+   * Returns `true` for a deferred module namespace object (`import defer * as ns from ...`) whose
+   * module has been evaluated.
+   *
+   * Identity comes from the subtype, which is the only signal here a page cannot fabricate: a page
+   * can set `Symbol.toStringTag` to `'Deferred Module'` and define an own property named
+   * `[[ModuleStatus]]`, and both reach the frontend looking authentic.
+   *
+   * The status rides along in the object's preview, so surfaces that fetch without
+   * `generatePreview` report `false` and treat the module as not yet run. That is the safe
+   * direction to be wrong in: reading a binding off a namespace runs its module, so DevTools must
+   * neither preview its exports nor expand it while it might still be inert.
+   */
+  static isEvaluatedDeferredModuleNamespace(object: RemoteObject|Protocol.Runtime.RemoteObject): boolean {
+    return object.subtype === Protocol.Runtime.RemoteObjectSubtype.Deferredmodule &&
+        deferredModuleStatus(object) === DEFERRED_MODULE_STATUS_EVALUATED;
+  }
+
   static unserializableDescription(object: unknown): string|null {
     if (typeof object === 'number') {
       const description = String(object);
@@ -365,6 +383,16 @@ export class RemoteObjectImpl extends RemoteObject {
   }
 
   override get hasChildren(): boolean {
+    if (this.#subtype === Protocol.Runtime.RemoteObjectSubtype.Deferredmodule) {
+      // A module that hasn't run reports no properties, so there is nothing behind the disclosure
+      // triangle. Where the status is unknown (i.e no preview was requested) stay expandable like any
+      // other object, since fetching properties neither evaluates the module nor invents exports,
+      // so at worst the row opens onto an empty list, and a module that has run shows its exports.
+      const status = deferredModuleStatus(this);
+      if (status !== undefined && status !== DEFERRED_MODULE_STATUS_EVALUATED) {
+        return false;
+      }
+    }
     return this.#hasChildren;
   }
 
@@ -449,6 +477,10 @@ export class RemoteObjectImpl extends RemoteObject {
     const internalPropertiesResult = [];
     for (const property of internalProperties) {
       if (!property.value) {
+        continue;
+      }
+      if (property.name === DEFERRED_MODULE_STATUS_PROPERTY_NAME &&
+          this.#subtype === Protocol.Runtime.RemoteObjectSubtype.Deferredmodule) {
         continue;
       }
       const propertyValue = this.#runtimeModel.createRemoteObject(property.value);
@@ -1118,6 +1150,20 @@ export class RemoteError {
 
 const descriptionLengthParenRegex = /\(([0-9]+)\)/;
 const descriptionLengthSquareRegex = /\[([0-9]+)\]/;
+
+/** Internal property V8 reports for deferred module namespace objects. */
+const DEFERRED_MODULE_STATUS_PROPERTY_NAME = '[[ModuleStatus]]';
+
+/** The one `[[ModuleStatus]]` value that means the module has run; the rest are all "not yet". */
+const DEFERRED_MODULE_STATUS_EVALUATED = 'evaluated';
+
+/**
+ * Reads `[[ModuleStatus]]` off a deferred module namespace. Returns `undefined` when the object was
+ * fetched without `generatePreview`, in which case the state is simply unknown.
+ */
+function deferredModuleStatus(object: RemoteObject|Protocol.Runtime.RemoteObject): string|undefined {
+  return object.preview?.properties.find(({name}) => name === DEFERRED_MODULE_STATUS_PROPERTY_NAME)?.value;
+}
 
 const enum UnserializableNumber {
   NEGATIVE_ZERO = ('-0'),

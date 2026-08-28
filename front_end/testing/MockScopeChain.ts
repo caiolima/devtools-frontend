@@ -84,6 +84,13 @@ interface SetBreakpointByUrlResponseHandler {
  *
  * Creates a new {@link TestUniverse}, accessible via `mockDebuggerBackend.universe`.
  */
+/** A property of an object served by {@link MockDebuggerBackend.createSimpleRemoteObject}. */
+export interface MockObjectProperty {
+  name: string;
+  /** A number for the common case, or a whole RemoteObject when a test needs more control. */
+  value?: number|Protocol.Runtime.RemoteObject;
+}
+
 export class MockDebuggerBackend {
   readonly universe: TestUniverse;
 
@@ -92,7 +99,7 @@ export class MockDebuggerBackend {
 
   readonly #scriptSources = new Map<string, string>();
   readonly #sourceMapContents = new Map<string, string>();
-  readonly #objectProperties = new Map<string, Array<{name: string, value?: number}>>();
+  readonly #objectProperties = new Map<string, MockObjectProperty[]>();
   readonly #setBreakpointByUrlResponses = new Map<string, SetBreakpointByUrlResponseHandler>();
   readonly #removeBreakpointCallbacks = new Map<Protocol.Debugger.BreakpointId, () => void>();
   #nextObjectIndex = 0;
@@ -247,7 +254,7 @@ export class MockDebuggerBackend {
     };
   }
 
-  createSimpleRemoteObject(properties: Array<{name: string, value?: number}>): Protocol.Runtime.RemoteObject {
+  createSimpleRemoteObject(properties: MockObjectProperty[]): Protocol.Runtime.RemoteObject {
     const objectId = 'OBJECTID.' + this.#nextObjectIndex++;
     this.#objectProperties.set(objectId, properties);
 
@@ -370,7 +377,9 @@ export class MockDebuggerBackend {
     for (const property of objectProperties) {
       result.push({
         name: property.name,
-        value: {
+        // A property can carry a whole RemoteObject, so that tests can describe values that aren't
+        // plain numbers.
+        value: typeof property.value === 'object' ? property.value : {
           type: Protocol.Runtime.RemoteObjectType.Number,
           value: property.value,
           description: `${property.value}`,
