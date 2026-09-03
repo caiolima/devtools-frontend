@@ -136,7 +136,7 @@ export class SourceMapEntry {
  * can process and can safely be serialized as part of the skip list we send to V8 with
  * `Debugger.stepOver` (http://crbug.com/1305956).
  */
-export const UNBOUNDED = 2 ** 31 - 1;
+export const UNBOUNDED: number = 2 ** 31 - 1;
 
 /**
  * The original text a single range mapping covers, `[start, end[`, together with the index
@@ -870,9 +870,7 @@ export class SourceMap {
    * Marks the entries of the section that was just parsed which the `rangeMappings` field of
    * that section points at.
    *
-   * A malformed field is dropped with a warning instead of invalidating the source map, so
-   * that a bug in a tool emitting this still fairly new field cannot take out debugging for
-   * the whole script. Nothing is marked unless the entire field checks out.
+   * A malformed field is a hard failure and invalidates the SourceMap.
    *
    * @param lineStarts index in `mappings` of the first entry of each line of the section.
    * @param lineCounts number of entries on each line of the section.
@@ -882,32 +880,26 @@ export class SourceMap {
       return;
     }
     const mappings = this.mappings();
-    try {
-      if (typeof map.rangeMappings !== 'string') {
-        throw new Error('must be a string');
-      }
-      const rangeMappings = decodeRangeMappings(map.rangeMappings);
+    if (typeof map.rangeMappings !== 'string') {
+      throw new Error('must be a string');
+    }
+    const rangeMappings = decodeRangeMappings(map.rangeMappings);
 
-      for (let line = 0; line < rangeMappings.length; ++line) {
-        for (const index of rangeMappings[line]) {
-          if (index >= (lineCounts[line] ?? 0)) {
-            throw new Error(`index ${index} exceeds the mappings of generated line ${line}`);
-          }
-          if (mappings[lineStarts[line] + index].sourceURL === undefined) {
-            throw new Error(`index ${index} of generated line ${line} has no original position`);
-          }
+    for (let line = 0; line < rangeMappings.length; ++line) {
+      for (const index of rangeMappings[line]) {
+        // TODO(caiolima): treating this as a hard failure. The problem is that buggy SourceMaps with
+        // Range Mappings can be quite inaccurate, since their mappings could be quite sparse
+        // compared to a SourceMap without RangeMapping.
+        if (index >= (lineCounts[line] ?? 0)) {
+          throw new Error(`index ${index} exceeds the mappings of generated line ${line}`);
         }
-      }
+        if (mappings[lineStarts[line] + index].sourceURL === undefined) {
+          throw new Error(`index ${index} of generated line ${line} has no original position`);
+        }
 
-      for (let line = 0; line < rangeMappings.length; ++line) {
-        for (const index of rangeMappings[line]) {
-          const mappingIndex = lineStarts[line] + index;
-          mappings[mappingIndex] = asRangeMapping(mappings[mappingIndex]);
-        }
+        const mappingIndex = lineStarts[line] + index;
+        mappings[mappingIndex] = asRangeMapping(mappings[mappingIndex]);
       }
-    } catch (e) {
-      this.#console.warn(`SourceMap "${this.#sourceMappingURL}" has an invalid "rangeMappings" field: ${
-          e instanceof Error ? e.message : e}`);
     }
   }
 

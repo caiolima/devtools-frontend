@@ -1805,67 +1805,63 @@ describeWithEnvironment('SourceMap', () => {
     });
 
     describe('malformed input', () => {
-      function assertFieldIsIgnored(payload: SDK.SourceMap.SourceMapV3Object) {
-        const console = new Common.Console.Console();
-        const warn = sinon.spy(console, 'warn');
+      function assertSourceMapIsInvalid(payload: SDK.SourceMap.SourceMapV3Object) {
+        const error = sinon.stub(console, 'error');
 
-        const sourceMap = createSourceMap(payload, console);
+        const sourceMap = createSourceMap(payload);
 
-        // The normal mappings keep working, only the range information is dropped.
-        assert.isNotEmpty(sourceMap.mappings());
-        assert.isFalse(sourceMap.mappings().some(entry => entry.isRangeMapping));
-        sinon.assert.calledOnce(warn);
-        assert.include(warn.firstCall.args[0], 'rangeMappings');
+        // A malformed field is a hard failure, which takes the whole source map with it.
+        assert.isEmpty(sourceMap.mappings());
+        sinon.assert.calledOnceWithMatch(error, 'Failed to parse source map');
       }
 
-      it('ignores the field when a relative index is zero', () => {
+      it('invalidates the source map when a relative index is zero', () => {
         const payload = encodeSourceMap(['0:0 => example.js:0:0', '0:5 => example.js:0:5']);
-        assertFieldIsIgnored({...payload, rangeMappings: 'AA'});
+        assertSourceMapIsInvalid({...payload, rangeMappings: 'AA'});
       });
 
-      it('ignores the field when an index is past the end of its line', () => {
+      it('invalidates the source map when an index is past the end of its line', () => {
         const payload = encodeSourceMap(['0:0 => example.js:0:0']);
-        assertFieldIsIgnored({...payload, rangeMappings: 'B'});
+        assertSourceMapIsInvalid({...payload, rangeMappings: 'B'});
       });
 
-      it('ignores the field when a line has more range mappings than mappings', () => {
+      it('invalidates the source map when a line has more range mappings than mappings', () => {
         const payload = encodeSourceMap(['0:0 => example.js:0:0']);
-        assertFieldIsIgnored({...payload, rangeMappings: 'B;A;A'});
+        assertSourceMapIsInvalid({...payload, rangeMappings: 'B;A;A'});
       });
 
-      it('ignores the field when it points at a mapping without an original position', () => {
+      it('invalidates the source map when it points at a mapping without an original position', () => {
         const payload = encodeSourceMap(['0:0', '0:5 => example.js:0:5']);
-        assertFieldIsIgnored({...payload, rangeMappings: 'A'});
+        assertSourceMapIsInvalid({...payload, rangeMappings: 'A'});
       });
 
-      it('ignores the field when an index does not fit into 32 bits', () => {
+      it('invalidates the source map when an index does not fit into 32 bits', () => {
         const payload = encodeSourceMap(['0:0 => example.js:0:0']);
-        assertFieldIsIgnored({...payload, rangeMappings: 'gggggggB'});
+        assertSourceMapIsInvalid({...payload, rangeMappings: 'gggggggB'});
       });
 
-      it('ignores the field when it is not a string', () => {
+      it('invalidates the source map when it is not a string', () => {
         const payload = encodeSourceMap(['0:0 => example.js:0:0']);
-        assertFieldIsIgnored({...payload, rangeMappings: {x: 'foo'} as unknown as string});
+        assertSourceMapIsInvalid({...payload, rangeMappings: {x: 'foo'} as unknown as string});
       });
 
-      it('does not warn about a source map without the field', () => {
-        const console = new Common.Console.Console();
-        const warn = sinon.spy(console, 'warn');
+      it('keeps a source map without the field valid', () => {
+        const error = sinon.stub(console, 'error');
 
-        createSourceMap(encodeSourceMap(['0:0 => example.js:0:0']), console).mappings();
+        const sourceMap = createSourceMap(encodeSourceMap(['0:0 => example.js:0:0']));
 
-        sinon.assert.notCalled(warn);
+        assert.isNotEmpty(sourceMap.mappings());
+        sinon.assert.notCalled(error);
       });
 
       it('accepts trailing empty lines beyond the mappings', () => {
-        const console = new Common.Console.Console();
-        const warn = sinon.spy(console, 'warn');
+        const error = sinon.stub(console, 'error');
         const payload = encodeSourceMap(['1:0 => example.js:0:0']);
 
-        const sourceMap = createSourceMap({...payload, rangeMappings: ';A;;;'}, console);
+        const sourceMap = createSourceMap({...payload, rangeMappings: ';A;;;'});
 
         assert.deepEqual(sourceMap.mappings().map(entry => entry.isRangeMapping), [true]);
-        sinon.assert.notCalled(warn);
+        sinon.assert.notCalled(error);
       });
     });
 
@@ -1876,9 +1872,8 @@ describeWithEnvironment('SourceMap', () => {
        * https://github.com/tc39/source-map-tests. The payloads are reproduced verbatim except
        * for the `file` field, which this implementation does not read.
        *
-       * The suite marks the malformed maps as invalid source maps. DevTools instead drops the
-       * `rangeMappings` field and keeps the regular mappings working, so those cases assert
-       * that no entry ends up marked.
+       * The suite marks the malformed maps as invalid source maps, and so does DevTools: a
+       * malformed `rangeMappings` field is a hard failure that invalidates the whole map.
        */
 
       interface CheckMapping {
@@ -2050,27 +2045,24 @@ describeWithEnvironment('SourceMap', () => {
       ];
 
       for (const {name, payload} of INVALID) {
-        it(`drops the field of "${name}"`, () => {
-          const console = new Common.Console.Console();
-          const warn = sinon.spy(console, 'warn');
+        it(`rejects "${name}"`, () => {
+          const error = sinon.stub(console, 'error');
 
-          const sourceMap = createSourceMap(payload, console);
+          const sourceMap = createSourceMap(payload);
 
-          assert.isFalse(sourceMap.mappings().some(entry => entry.isRangeMapping));
-          sinon.assert.calledOnce(warn);
-          assert.include(warn.firstCall.args[0], 'rangeMappings');
+          assert.isEmpty(sourceMap.mappings());
+          sinon.assert.calledOnceWithMatch(error, 'Failed to parse source map');
         });
       }
 
       for (const {name, payload, checks} of VALID) {
         it(`accepts and resolves "${name}"`, () => {
-          const console = new Common.Console.Console();
-          const warn = sinon.spy(console, 'warn');
+          const error = sinon.stub(console, 'error');
 
-          const sourceMap = createSourceMap(payload, console);
+          const sourceMap = createSourceMap(payload);
           sourceMap.mappings();
 
-          sinon.assert.notCalled(warn);
+          sinon.assert.notCalled(error);
           for (const check of checks) {
             const entry = sourceMap.findEntry(check.generatedLine, check.generatedColumn);
             const actual = entry && {

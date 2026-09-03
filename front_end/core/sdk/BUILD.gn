@@ -166,7 +166,6 @@ ts_library("unittests") {
     "SourceMap.test.ts",
     "SourceMapCache.test.ts",
     "SourceMapFunctionRanges.test.ts",
-    "SourceMapManager.test.ts",
     "SourceMapRangeMappings.test.ts",
     "SourceMapScopeChainEntry.test.ts",
     "SourceMapScopesInfo.test.ts",
