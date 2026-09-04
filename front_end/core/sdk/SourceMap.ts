@@ -15,6 +15,7 @@ import {decodeRangeMappings, interpolateOriginalPosition} from './SourceMapRange
 import {
   type PositionRange,
   type RawFrameTranslation,
+  type TranslatedFrame,
   scriptRelativePosition,
   SourceMapScopesInfo,
 } from './SourceMapScopesInfo.js';
@@ -270,8 +271,11 @@ export class SourceMap {
     return this.#scopesFallbackPromise ?? Promise.resolve();
   }
 
-  findEntry(lineNumber: number, columnNumber: number): SourceMapEntry|null {
-    this.#ensureSourceMapProcessed();
+  /**
+   * @returns the index in {@link mappings} of the last entry that starts at or before the
+   *          given generated position, or `null` if the position precedes all entries.
+   */
+  #findEntryIndex(lineNumber: number, columnNumber: number): number|null {
     const mappings = this.mappings();
     const index = Platform.ArrayUtilities.upperBound(
         mappings, undefined, (_, entry) => lineNumber - entry.lineNumber || columnNumber - entry.columnNumber);
@@ -295,8 +299,14 @@ export class SourceMap {
    * A range mapping maps every position it covers exactly, so those positions count as exact too.
    */
   findEntryExact(lineNumber: number, columnNumber: number): SourceMapEntry|null {
-    const entry = this.findEntry(lineNumber, columnNumber);
-    if (entry?.lineNumber === lineNumber && entry.columnNumber === columnNumber) {
+    const index = this.#findEntryIndex(lineNumber, columnNumber);
+    if (index === null) {
+      return null;
+    }
+    // Note that this deliberately doesn't go through `findEntry`, which synthesizes entries
+    // for positions inside a range mapping that are not an exact match.
+    const entry = this.mappings()[index];
+    if (entry.lineNumber === lineNumber && entry.columnNumber === columnNumber) {
       return entry;
     }
     return null;
