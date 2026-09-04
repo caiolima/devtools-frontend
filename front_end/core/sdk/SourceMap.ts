@@ -12,7 +12,7 @@ import type {CallFrame, ScopeChainEntry} from './DebuggerModel.js';
 import {scopeTreeForScript} from './ScopeTreeCache.js';
 import type {Script} from './Script.js';
 import {buildOriginalScopes, decodePastaRanges, type NamedFunctionRange} from './SourceMapFunctionRanges.js';
-import {decodeRangeMappings} from './SourceMapRangeMappings.js';
+import {decodeRangeMappings, interpolateOriginalPosition} from './SourceMapRangeMappings.js';
 import {SourceMapScopesInfo, type TranslatedFrame} from './SourceMapScopesInfo.js';
 
 /**
@@ -242,18 +242,45 @@ export class SourceMap {
     return this.#scopesFallbackPromise ?? Promise.resolve();
   }
 
-  findEntry(lineNumber: number, columnNumber: number): SourceMapEntry|null {
-    this.#ensureSourceMapProcessed();
+  /**
+   * @returns the index in {@link mappings} of the last entry that starts at or before the
+   *          given generated position, or `null` if the position precedes all entries.
+   */
+  #findEntryIndex(lineNumber: number, columnNumber: number): number|null {
     const mappings = this.mappings();
     const index = Platform.ArrayUtilities.upperBound(
         mappings, undefined, (_, entry) => lineNumber - entry.lineNumber || columnNumber - entry.columnNumber);
-    return index ? mappings[index - 1] : null;
+    return index ? index - 1 : null;
+  }
+
+  findEntry(lineNumber: number, columnNumber: number): SourceMapEntry|null {
+    this.#ensureSourceMapProcessed();
+    const index = this.#findEntryIndex(lineNumber, columnNumber);
+    if (index === null) {
+      return null;
+    }
+    const entry = this.mappings()[index];
+    if (!entry.isRangeMapping || (entry.lineNumber === lineNumber && entry.columnNumber === columnNumber)) {
+      return entry;
+    }
+    // A range mapping covers the generated code character by character, so report the
+    // position the queried character maps to rather than the start of the range. The name,
+    // if any, describes the token at the start and does not carry over.
+    const sourcePosition = interpolateOriginalPosition(entry, lineNumber, columnNumber);
+    return new SourceMapEntry(lineNumber, columnNumber, entry.sourceIndex, entry.sourceURL, sourcePosition.lineNumber,
+                              sourcePosition.columnNumber, /* name= */ undefined, /* isRangeMapping= */ true);
   }
 
   /** Returns the entry at the given position but only if an entry exists for that exact position */
   findEntryExact(lineNumber: number, columnNumber: number): SourceMapEntry|null {
-    const entry = this.findEntry(lineNumber, columnNumber);
-    if (entry?.lineNumber === lineNumber && entry.columnNumber === columnNumber) {
+    const index = this.#findEntryIndex(lineNumber, columnNumber);
+    if (index === null) {
+      return null;
+    }
+    // Note that this deliberately doesn't go through `findEntry`, which synthesizes entries
+    // for positions inside a range mapping that are not an exact match.
+    const entry = this.mappings()[index];
+    if (entry.lineNumber === lineNumber && entry.columnNumber === columnNumber) {
       return entry;
     }
     return null;
@@ -283,6 +310,18 @@ export class SourceMap {
     const endColumn = endIndex < mappings.length ? mappings[endIndex].columnNumber : 2 ** 31 - 1;
     const range = new TextUtils.TextRange.TextRange(
         mappings[startIndex].lineNumber, mappings[startIndex].columnNumber, endLine, endColumn);
+
+    if (mappings[startIndex].isRangeMapping) {
+      // A range mapping covers the original code character by character, so the original
+      // range has the exact same shape as the generated one and there's nothing to look up.
+      const sourceEnd = endIndex < mappings.length ?
+          interpolateOriginalPosition(mappings[startIndex], endLine, endColumn) :
+          {lineNumber: endLine, columnNumber: endColumn};
+      const sourceRange = new TextUtils.TextRange.TextRange(mappings[startIndex].sourceLineNumber,
+                                                            mappings[startIndex].sourceColumnNumber,
+                                                            sourceEnd.lineNumber, sourceEnd.columnNumber);
+      return {range, sourceRange, sourceURL};
+    }
 
     // Now try to find the corresponding token in the original code.
     const reverseMappings = this.reversedMappings(sourceURL);
