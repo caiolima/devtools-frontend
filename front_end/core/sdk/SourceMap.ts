@@ -592,7 +592,9 @@ export class SourceMap {
                                    sourceColumnNumber, names[nameIndex]));
     }
 
-    this.#markRangeMappings(map, lineStarts, lineCounts);
+    if (Root.Runtime.hostConfig.devToolsSourceMapRangeMappings?.enabled) {
+      this.#markRangeMappings(map, lineStarts, lineCounts);
+    }
 
     if (!this.#scopesInfo) {
       this.#scopesInfo = new SourceMapScopesInfo(this, {scopes: [], ranges: []});
@@ -623,9 +625,6 @@ export class SourceMap {
    * @param lineCounts number of entries on each line of the section.
    */
   #markRangeMappings(map: SourceMapV3Object, lineStarts: number[], lineCounts: number[]): void {
-    if (!Root.Runtime.hostConfig.devToolsSourceMapRangeMappings?.enabled) {
-      return;
-    }
     if (map.rangeMappings === undefined) {
       return;
     }
@@ -637,9 +636,6 @@ export class SourceMap {
 
     for (let line = 0; line < rangeMappings.length; ++line) {
       for (const index of rangeMappings[line]) {
-        // TODO(caiolima): treating this as a hard failure. The problem is that buggy SourceMaps with
-        // Range Mappings can be quite inaccurate, since their mappings could be quite sparse
-        // compared to a SourceMap without RangeMapping.
         if (index >= (lineCounts[line] ?? 0)) {
           throw new Error(`index ${index} exceeds the mappings of generated line ${line}`);
         }
