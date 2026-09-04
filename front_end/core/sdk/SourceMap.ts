@@ -860,7 +860,7 @@ export class SourceMap {
 /** @returns a copy of the {@link entry} that is marked as a range mapping. */
 function asRangeMapping(entry: SourceMapEntry): SourceMapEntry {
   return new SourceMapEntry(entry.lineNumber, entry.columnNumber, entry.sourceIndex, entry.sourceURL,
-                            entry.sourceLineNumber, entry.sourceColumnNumber, entry.name, /* isRangeMapping= */ true);
+                            entry.sourceLineNumber, entry.sourceColumnNumber, entry.name, true);
 }
 
 const VLQ_BASE_SHIFT = 5;
@@ -897,7 +897,7 @@ export class TokenIterator {
 
   nextVLQ(): number {
     // Read unsigned value.
-    let result = this.#decodeVLQ(/* unsigned= */ false);
+    let result = this.#decodeVLQ(false);
 
     // Fix the sign.
     const negative = result & 1;
@@ -914,7 +914,7 @@ export class TokenIterator {
    * @see https://github.com/tc39/source-map/blob/main/proposals/range-mappings.md
    */
   nextUnsignedVLQ(): number {
-    return this.#decodeVLQ(/* unsigned= */ true);
+    return this.#decodeVLQ(true);
   }
 
   #decodeVLQ(unsigned: boolean): number {
