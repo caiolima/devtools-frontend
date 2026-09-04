@@ -303,6 +303,7 @@ describe('SourceMapScopesInfo', () => {
           sourceColumnNumber: mappedPausedPosition.column,
           sourceURL: urlString``,
           name: undefined,
+          isRangeMapping: false,
         });
       } else {
         sourceMap.findEntry.returns(null);
