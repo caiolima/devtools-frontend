@@ -1656,6 +1656,52 @@ describeWithEnvironment('SourceMap', () => {
         ]));
       }
 
+      describe('sourceLineMapping', () => {
+        it('resolves a line in the middle of a range mapping', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assertReverseMapping(sourceMap.sourceLineMapping(sourceUrlExample, 2, 0), 1, 0);
+          assertReverseMapping(sourceMap.sourceLineMapping(sourceUrlExample, 2, 4), 1, 4);
+        });
+
+        it('resolves a column in the middle of the first line of a range mapping', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assertReverseMapping(sourceMap.sourceLineMapping(sourceUrlExample, 1, 5), 0, 7);
+        });
+
+        it('resolves the last line a range mapping reaches into', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assertReverseMapping(sourceMap.sourceLineMapping(sourceUrlExample, 3, 5), 2, 5);
+        });
+
+        it('reports the covered position as the original position', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assertMapping(sourceMap.sourceLineMapping(sourceUrlExample, 2, 4), 0, 'example.js', 2, 4);
+        });
+
+        it('snaps forward to the start of a range mapping', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assertReverseMapping(sourceMap.sourceLineMapping(sourceUrlExample, 1, 0), 0, 4);
+        });
+
+        it('returns null for lines beyond the range mapping', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assert.isNull(sourceMap.sourceLineMapping(sourceUrlExample, 4, 0));
+          assert.isNull(sourceMap.sourceLineMapping(sourceUrlExample, 0, 0));
+        });
+
+        it('still resolves regular mappings', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assertReverseMapping(sourceMap.sourceLineMapping(sourceUrlExample, 9, 0), 2, 6);
+        });
+      });
+
       describe('findReverseEntries', () => {
         it('interpolates a position covered by a range mapping', () => {
           const sourceMap = createSourceMapWithRangeOverLines();

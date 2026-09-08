@@ -439,6 +439,43 @@ export class SourceMap {
 
   sourceLineMapping(sourceURL: Platform.DevToolsPath.UrlString, lineNumber: number, columnNumber: number):
       SourceMapEntry|null {
+    const fromEntries = this.#sourceLineMappingFromEntries(sourceURL, lineNumber, columnNumber);
+    const fromRangeMappings = this.#sourceLineMappingFromRangeMappings(sourceURL, lineNumber, columnNumber);
+    if (fromEntries === null || fromRangeMappings === null) {
+      return fromEntries ?? fromRangeMappings;
+    }
+    return betterSourceLineCandidate(fromEntries, fromRangeMappings, columnNumber);
+  }
+
+  /**
+   * @returns the position on the requested original line that the range mappings covering
+   *          that line map, picked by the same rule {@link sourceLineMapping} applies to the
+   *          regular entries.
+   */
+  #sourceLineMappingFromRangeMappings(sourceURL: Platform.DevToolsPath.UrlString, lineNumber: number,
+                                      columnNumber: number): SourceMapEntry|null {
+    this.#ensureSourceMapProcessed();
+    const records = this.#sourceInfoByURL.get(sourceURL)?.rangeMappings;
+    if (!records) {
+      return null;
+    }
+    let best: SourceMapEntry|null = null;
+    for (const record of records) {
+      if (record.startLine > lineNumber) {
+        break;
+      }
+      const column = rangeMappingColumnOnLine(record, lineNumber, columnNumber);
+      if (column === null) {
+        continue;
+      }
+      const candidate = this.#reverseEntryForRangeMapping(record, lineNumber, column);
+      best = best === null ? candidate : betterSourceLineCandidate(best, candidate, columnNumber);
+    }
+    return best;
+  }
+
+  #sourceLineMappingFromEntries(sourceURL: Platform.DevToolsPath.UrlString, lineNumber: number,
+                                columnNumber: number): SourceMapEntry|null {
     const mappings = this.mappings();
     const reverseMappings = this.reversedMappings(sourceURL);
     const first = Platform.ArrayUtilities.lowerBound(reverseMappings, lineNumber, lineComparator);
@@ -1050,6 +1087,44 @@ export class SourceMap {
 /** @returns 0 if both positions are equal, a negative number if a < b and a positive one if a > b */
 function comparePositions(lineA: number, columnA: number, lineB: number, columnB: number): number {
   return lineA - lineB || columnA - columnB;
+}
+
+/**
+ * @returns the column of {@link lineNumber} that the {@link record} maps and that best matches
+ *          the {@link columnNumber}, which is the column itself if the record covers it, the
+ *          first covered column if the record only starts later on that line, and the last
+ *          covered one if it ends before. `null` if the record doesn't cover the line at all.
+ */
+function rangeMappingColumnOnLine(record: RangeMappingRecord, lineNumber: number, columnNumber: number): number|null {
+  if (record.startLine > lineNumber || record.endLine < lineNumber) {
+    return null;
+  }
+  const firstColumn = record.startLine === lineNumber ? record.startColumn : 0;
+  const endColumn = record.endLine === lineNumber ? record.endColumn : UNBOUNDED;
+  if (firstColumn >= endColumn) {
+    return null;
+  }
+  if (columnNumber < firstColumn) {
+    return firstColumn;
+  }
+  return columnNumber < endColumn ? columnNumber : endColumn - 1;
+}
+
+/**
+ * @returns whichever of the two entries better matches what `sourceLineMapping` looks for:
+ *          the first position at or after the {@link columnNumber}, or the last position
+ *          before it if there is none.
+ */
+function betterSourceLineCandidate(a: SourceMapEntry, b: SourceMapEntry, columnNumber: number): SourceMapEntry {
+  const aIsAtOrAfter = a.sourceColumnNumber >= columnNumber;
+  const bIsAtOrAfter = b.sourceColumnNumber >= columnNumber;
+  if (aIsAtOrAfter !== bIsAtOrAfter) {
+    return aIsAtOrAfter ? a : b;
+  }
+  if (aIsAtOrAfter) {
+    return a.sourceColumnNumber <= b.sourceColumnNumber ? a : b;
+  }
+  return a.sourceColumnNumber >= b.sourceColumnNumber ? a : b;
 }
 
 /** @returns a copy of the {@link entry} that is marked as a range mapping. */

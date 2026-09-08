@@ -386,6 +386,48 @@ describe('CompilerScriptMapping', () => {
     assert.deepEqual(mappedLines, new Set([0, 2, 4]));
   });
 
+  describe('with a range mapping', () => {
+    const sourceRoot = 'http://example.com';
+
+    /**
+     * A range mapping starting at 0:0 and reaching until the mapping at generated 3:0, so it
+     * covers the original lines 0 through 2 character by character.
+     */
+    async function addScriptWithRangeMapping(target: SDK.Target.Target) {
+      const scriptInfo = {
+        url: `${sourceRoot}/test.out.js`,
+        content: 'const a = 1;\nconst b = 2;\nconst c = 3;\nf(a, b, c);\n',
+      };
+      const sourceMapInfo = {
+        url: `${scriptInfo.url}.map`,
+        content: encodeSourceMap(['0:0 => test.ts:0:0 (range)', '3:0 => test.ts:9:0'], sourceRoot),
+      };
+      const [uiSourceCode, script] = await Promise.all([
+        waitForUISourceCodeAdded(`${sourceRoot}/test.ts`, target),
+        backend.addScript(target, scriptInfo, sourceMapInfo),
+      ]);
+      return {uiSourceCode, script};
+    }
+
+    it('maps a covered line to the matching raw location', async () => {
+      const target = backend.createTarget();
+      const {uiSourceCode, script} = await addScriptWithRangeMapping(target);
+
+      assert.deepEqual(await debuggerWorkspaceBinding.uiLocationToRawLocations(uiSourceCode, 1, 0),
+                       [script.debuggerModel.createRawLocation(script, 1, 0)]);
+      assert.deepEqual(await debuggerWorkspaceBinding.uiLocationToRawLocations(uiSourceCode, 2, 3),
+                       [script.debuggerModel.createRawLocation(script, 2, 3)]);
+    });
+
+    it('still maps the regular mapping that follows it', async () => {
+      const target = backend.createTarget();
+      const {uiSourceCode, script} = await addScriptWithRangeMapping(target);
+
+      assert.deepEqual(await debuggerWorkspaceBinding.uiLocationToRawLocations(uiSourceCode, 9, 0),
+                       [script.debuggerModel.createRawLocation(script, 3, 0)]);
+    });
+  });
+
   it('correctly maps to multiple raw locations if the source map has multiple entries for a single source line/column',
      async () => {
        const target = backend.createTarget();
