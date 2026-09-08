@@ -440,6 +440,43 @@ export class SourceMap {
 
   sourceLineMapping(sourceURL: Platform.DevToolsPath.UrlString, lineNumber: number, columnNumber: number):
       SourceMapEntry|null {
+    const fromEntries = this.#sourceLineMappingFromEntries(sourceURL, lineNumber, columnNumber);
+    const fromRangeMappings = this.#sourceLineMappingFromRangeMappings(sourceURL, lineNumber, columnNumber);
+    if (fromEntries === null || fromRangeMappings === null) {
+      return fromEntries ?? fromRangeMappings;
+    }
+    return betterSourceLineCandidate(fromEntries, fromRangeMappings, columnNumber);
+  }
+
+  /**
+   * @returns the position on the requested original line that the range mappings covering
+   *          that line map, picked by the same rule {@link sourceLineMapping} applies to the
+   *          regular entries.
+   */
+  #sourceLineMappingFromRangeMappings(sourceURL: Platform.DevToolsPath.UrlString, lineNumber: number,
+                                      columnNumber: number): SourceMapEntry|null {
+    this.#ensureSourceMapProcessed();
+    const records = this.#sourceInfoByURL.get(sourceURL)?.rangeMappings;
+    if (!records) {
+      return null;
+    }
+    let best: SourceMapEntry|null = null;
+    for (const record of records) {
+      if (record.startLine > lineNumber) {
+        break;
+      }
+      const column = rangeMappingColumnOnLine(record, lineNumber, columnNumber);
+      if (column === null) {
+        continue;
+      }
+      const candidate = this.#reverseEntryForRangeMapping(record, lineNumber, column);
+      best = best === null ? candidate : betterSourceLineCandidate(best, candidate, columnNumber);
+    }
+    return best;
+  }
+
+  #sourceLineMappingFromEntries(sourceURL: Platform.DevToolsPath.UrlString, lineNumber: number,
+                                columnNumber: number): SourceMapEntry|null {
     const mappings = this.mappings();
     const reverseMappings = this.reversedMappings(sourceURL);
     const first = Platform.ArrayUtilities.lowerBound(reverseMappings, lineNumber, lineComparator);
@@ -538,6 +575,19 @@ export class SourceMap {
     }
 
     return ranges;
+  }
+
+  /**
+   * @returns the ranges of the source identified by the {@link sourceURL} that are covered by
+   *          a range mapping, considered `[start,end[`. A range mapping that reaches until the
+   *          end of the generated code ends at {@link UNBOUNDED}, as the length of the original
+   *          source is not necessarily known.
+   */
+  rangeMappedSourceRanges(sourceURL: Platform.DevToolsPath.UrlString): TextUtils.TextRange.TextRange[] {
+    this.#ensureSourceMapProcessed();
+    const records = this.#sourceInfoByURL.get(sourceURL)?.rangeMappings ?? [];
+    return records.map(record => new TextUtils.TextRange.TextRange(record.startLine, record.startColumn, record.endLine,
+                                                                   record.endColumn));
   }
 
   mappings(): SourceMapEntry[] {
@@ -880,6 +930,18 @@ export class SourceMap {
       return [];
     }
 
+    // Range mappings map the original code character by character, so instead of the span
+    // between their entry and the next one they contribute the exact image of the part of
+    // the `textRange` they cover.
+    const intersections = [];
+    for (const record of this.#sourceInfoByURL.get(url)?.rangeMappings ?? []) {
+      const intersection = intersectRangeMapping(record, textRange);
+      if (intersection) {
+        intersections.push({record, intersection});
+      }
+    }
+    const coveredByRangeMapping = new Set(intersections.map(({record}) => record.mappingIndex));
+
     // Determine the first reverse mapping that contains the starting point of the `textRange`.
     let startReverseIndex =
         Platform.ArrayUtilities.lowerBound(reverseMappings, textRange, ({startLine, startColumn}, index) => {
@@ -912,6 +974,9 @@ export class SourceMap {
     const ranges = [];
     for (let reverseIndex = startReverseIndex; reverseIndex < endReverseIndex; ++reverseIndex) {
       const startIndex = reverseMappings[reverseIndex], endIndex = startIndex + 1;
+      if (coveredByRangeMapping.has(startIndex)) {
+        continue;
+      }
       const range = TextUtils.TextRange.TextRange.createUnboundedFromLocation(
           mappings[startIndex].lineNumber, mappings[startIndex].columnNumber);
       if (endIndex < mappings.length) {
@@ -919,6 +984,13 @@ export class SourceMap {
         range.endColumn = mappings[endIndex].columnNumber;
       }
       ranges.push(range);
+    }
+    for (const {record, intersection} of intersections) {
+      const entry = mappings[record.mappingIndex];
+      const start = interpolateGeneratedPosition(entry, intersection.startLine, intersection.startColumn);
+      const end = interpolateGeneratedPosition(entry, intersection.endLine, intersection.endColumn);
+      ranges.push(
+          new TextUtils.TextRange.TextRange(start.lineNumber, start.columnNumber, end.lineNumber, end.columnNumber));
     }
 
     // ...sort them...
@@ -1050,6 +1122,60 @@ export class SourceMap {
 /** @returns 0 if both positions are equal, a negative number if a < b and a positive one if a > b */
 function comparePositions(lineA: number, columnA: number, lineB: number, columnB: number): number {
   return lineA - lineB || columnA - columnB;
+}
+
+/**
+ * @returns the column of {@link lineNumber} that the {@link record} maps and that best matches
+ *          the {@link columnNumber}, which is the column itself if the record covers it, the
+ *          first covered column if the record only starts later on that line, and the last
+ *          covered one if it ends before. `null` if the record doesn't cover the line at all.
+ */
+function rangeMappingColumnOnLine(record: RangeMappingRecord, lineNumber: number, columnNumber: number): number|null {
+  if (record.startLine > lineNumber || record.endLine < lineNumber) {
+    return null;
+  }
+  const firstColumn = record.startLine === lineNumber ? record.startColumn : 0;
+  const endColumn = record.endLine === lineNumber ? record.endColumn : UNBOUNDED;
+  if (firstColumn >= endColumn) {
+    return null;
+  }
+  if (columnNumber < firstColumn) {
+    return firstColumn;
+  }
+  return columnNumber < endColumn ? columnNumber : endColumn - 1;
+}
+
+/**
+ * @returns whichever of the two entries better matches what `sourceLineMapping` looks for:
+ *          the first position at or after the {@link columnNumber}, or the last position
+ *          before it if there is none.
+ */
+function betterSourceLineCandidate(a: SourceMapEntry, b: SourceMapEntry, columnNumber: number): SourceMapEntry {
+  const aIsAtOrAfter = a.sourceColumnNumber >= columnNumber;
+  const bIsAtOrAfter = b.sourceColumnNumber >= columnNumber;
+  if (aIsAtOrAfter !== bIsAtOrAfter) {
+    return aIsAtOrAfter ? a : b;
+  }
+  if (aIsAtOrAfter) {
+    return a.sourceColumnNumber <= b.sourceColumnNumber ? a : b;
+  }
+  return a.sourceColumnNumber >= b.sourceColumnNumber ? a : b;
+}
+
+/** @returns the part of the {@link textRange} that the {@link record} covers, if any. */
+function intersectRangeMapping(record: RangeMappingRecord, textRange: TextUtils.TextRange.TextRange):
+    {startLine: number, startColumn: number, endLine: number, endColumn: number}|null {
+  const startIsRecord =
+      comparePositions(record.startLine, record.startColumn, textRange.startLine, textRange.startColumn) >= 0;
+  const startLine = startIsRecord ? record.startLine : textRange.startLine;
+  const startColumn = startIsRecord ? record.startColumn : textRange.startColumn;
+  const endIsRecord = comparePositions(record.endLine, record.endColumn, textRange.endLine, textRange.endColumn) <= 0;
+  const endLine = endIsRecord ? record.endLine : textRange.endLine;
+  const endColumn = endIsRecord ? record.endColumn : textRange.endColumn;
+  if (comparePositions(startLine, startColumn, endLine, endColumn) >= 0) {
+    return null;
+  }
+  return {startLine, startColumn, endLine, endColumn};
 }
 
 /** @returns a copy of the {@link entry} that is marked as a range mapping. */
