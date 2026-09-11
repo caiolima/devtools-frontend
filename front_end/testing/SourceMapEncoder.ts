@@ -6,35 +6,8 @@ import * as SDK from '../core/sdk/sdk.js';
 
 const base64Digits = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
-export function encodeVlq(n: number): string {
-  // Set the sign bit as the least significant bit.
-  n = n >= 0 ? 2 * n : 1 - 2 * n;
-  // Encode into a base64 run.
-  let result = '';
-  while (true) {
-    // Extract the lowest 5 bits and remove them from the number.
-    const digit = n & 0x1f;
-    n >>= 5;
-    // Is there anything more left to encode?
-    if (n === 0) {
-      // We are done encoding, finish the run.
-      result += base64Digits[digit];
-      break;
-    } else {
-      // There is still more encode, so add the digit and the continuation bit.
-      result += base64Digits[0x20 + digit];
-    }
-  }
-  return result;
-}
-
-export function encodeVlqList(list: number[]): string {
-  return list.map(encodeVlq).join('');
-}
-
 export function encodeUnsignedVlq(n: number): string {
-  // Encode into a base64 run. Unlike `encodeVlq` there is no sign bit, so the least
-  // significant bit carries a value.
+  // Encode into a base64 run.
   let result = '';
   while (true) {
     // Extract the lowest 5 bits and remove them from the number.
@@ -50,6 +23,15 @@ export function encodeUnsignedVlq(n: number): string {
     result += base64Digits[0x20 + digit];
   }
   return result;
+}
+
+export function encodeVlq(n: number): string {
+  // Set the sign bit as the least significant bit, then encode the result as unsigned.
+  return encodeUnsignedVlq(n >= 0 ? 2 * n : 1 - 2 * n);
+}
+
+export function encodeVlqList(list: number[]): string {
+  return list.map(encodeVlq).join('');
 }
 
 /**

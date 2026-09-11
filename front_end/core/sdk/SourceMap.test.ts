@@ -6,7 +6,7 @@ import {assert} from 'chai';
 import sinon from 'sinon';
 
 import * as Formatter from '../../models/formatter/formatter.js';
-import {describeWithEnvironment, updateHostConfig} from '../../testing/EnvironmentHelpers.js';
+import {describeWithEnvironment} from '../../testing/EnvironmentHelpers.js';
 import {encodeSourceMap} from '../../testing/SourceMapEncoder.js';
 import * as ScopesCodec from '../../third_party/source-map-scopes-codec/source-map-scopes-codec.js';
 import * as Common from '../common/common.js';
@@ -1446,28 +1446,6 @@ describeWithEnvironment('SourceMap', () => {
       return new SDK.SourceMap.SourceMap(compiledUrl, sourceMapJsonUrl, payload, console);
     }
 
-    beforeEach(() => {
-      updateHostConfig({devToolsSourceMapRangeMappings: {enabled: true}});
-    });
-
-    it('ignores the field when the feature is disabled', () => {
-      updateHostConfig({devToolsSourceMapRangeMappings: {enabled: false}});
-      const payload = encodeSourceMap(['0:0 => example.js:0:0 (range)', '0:5 => example.js:0:5']);
-
-      const sourceMap = createSourceMap(payload);
-
-      assert.deepEqual(sourceMap.mappings().map(entry => entry.isRangeMapping), [false, false]);
-    });
-
-    it('does not invalidate a source map with a malformed field when the feature is disabled', () => {
-      updateHostConfig({devToolsSourceMapRangeMappings: {enabled: false}});
-      const payload = encodeSourceMap(['0:0 => example.js:0:0']);
-
-      const sourceMap = createSourceMap({...payload, rangeMappings: 'B'});
-
-      assert.isNotEmpty(sourceMap.mappings());
-    });
-
     describe('decoding', () => {
       it('does not mark any entry as a range mapping without the field', () => {
         const sourceMap = createSourceMap(encodeSourceMap(['0:0 => example.js:0:0', '0:5 => example.js:0:5']));
@@ -1532,53 +1510,62 @@ describeWithEnvironment('SourceMap', () => {
     });
 
     describe('malformed input', () => {
-      function assertSourceMapIsInvalid(payload: SDK.SourceMap.SourceMapV3Object) {
+      /**
+       * A malformed field never takes the source map with it, so this parses the
+       * {@link payload} and asserts that it didn't fail.
+       *
+       * @returns which of the parsed entries are marked as range mappings.
+       */
+      function rangeMappingsOfValidSourceMap(payload: SDK.SourceMap.SourceMapV3Object): boolean[] {
         const error = sinon.stub(console, 'error');
 
         const sourceMap = createSourceMap(payload);
 
-        // A malformed field is a hard failure, which takes the whole source map with it.
-        assert.isEmpty(sourceMap.mappings());
-        sinon.assert.calledOnceWithMatch(error, 'Failed to parse source map');
+        sinon.assert.notCalled(error);
+        return sourceMap.mappings().map(entry => entry.isRangeMapping);
       }
 
-      it('invalidates the source map when a relative index is zero', () => {
+      it('skips an index that is past the end of its line', () => {
+        const payload = encodeSourceMap(['0:0 => example.js:0:0', '1:0 => example.js:1:0']);
+
+        assert.deepEqual(rangeMappingsOfValidSourceMap({...payload, rangeMappings: 'B;A'}), [false, true]);
+      });
+
+      it('keeps the valid indices of a line with more range mappings than mappings', () => {
         const payload = encodeSourceMap(['0:0 => example.js:0:0', '0:5 => example.js:0:5']);
-        assertSourceMapIsInvalid({...payload, rangeMappings: 'AA'});
+
+        assert.deepEqual(rangeMappingsOfValidSourceMap({...payload, rangeMappings: 'BB'}), [false, true]);
       });
 
-      it('invalidates the source map when an index is past the end of its line', () => {
+      it('skips indices on lines without any mappings', () => {
         const payload = encodeSourceMap(['0:0 => example.js:0:0']);
-        assertSourceMapIsInvalid({...payload, rangeMappings: 'B'});
+
+        assert.deepEqual(rangeMappingsOfValidSourceMap({...payload, rangeMappings: 'A;A;A'}), [true]);
       });
 
-      it('invalidates the source map when a line has more range mappings than mappings', () => {
-        const payload = encodeSourceMap(['0:0 => example.js:0:0']);
-        assertSourceMapIsInvalid({...payload, rangeMappings: 'B;A;A'});
-      });
-
-      it('invalidates the source map when it points at a mapping without an original position', () => {
+      it('skips an index that points at a mapping without an original position', () => {
         const payload = encodeSourceMap(['0:0', '0:5 => example.js:0:5']);
-        assertSourceMapIsInvalid({...payload, rangeMappings: 'A'});
+
+        assert.deepEqual(rangeMappingsOfValidSourceMap({...payload, rangeMappings: 'AB'}), [false, true]);
       });
 
-      it('invalidates the source map when an index does not fit into 32 bits', () => {
+      it('tolerates a relative index of zero', () => {
+        const payload = encodeSourceMap(['0:0 => example.js:0:0', '0:5 => example.js:0:5']);
+
+        assert.deepEqual(rangeMappingsOfValidSourceMap({...payload, rangeMappings: 'AAB'}), [true, true]);
+      });
+
+      it('ignores the field when an index does not fit into 32 bits', () => {
         const payload = encodeSourceMap(['0:0 => example.js:0:0']);
-        assertSourceMapIsInvalid({...payload, rangeMappings: 'gggggggB'});
+
+        assert.deepEqual(rangeMappingsOfValidSourceMap({...payload, rangeMappings: 'gggggggB'}), [false]);
       });
 
-      it('invalidates the source map when it is not a string', () => {
+      it('ignores the field when it is not a string', () => {
         const payload = encodeSourceMap(['0:0 => example.js:0:0']);
-        assertSourceMapIsInvalid({...payload, rangeMappings: {x: 'foo'} as unknown as string});
-      });
 
-      it('keeps a source map without the field valid', () => {
-        const error = sinon.stub(console, 'error');
-
-        const sourceMap = createSourceMap(encodeSourceMap(['0:0 => example.js:0:0']));
-
-        assert.isNotEmpty(sourceMap.mappings());
-        sinon.assert.notCalled(error);
+        assert.deepEqual(rangeMappingsOfValidSourceMap({...payload, rangeMappings: {x: 'foo'} as unknown as string}),
+                         [false]);
       });
 
       it('accepts trailing empty lines beyond the mappings', () => {
