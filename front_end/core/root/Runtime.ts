@@ -500,10 +500,6 @@ export interface DevToolsEnableDurableMessages {
   enabled: boolean;
 }
 
-export interface DevToolsSourceMapRangeMappings {
-  enabled: boolean;
-}
-
 interface HostConfigAiAssistanceContextSelectionAgent {
   enabled: boolean;
 }
@@ -596,7 +592,6 @@ export type HostConfig = Platform.TypeScriptUtilities.RecursivePartial<{
   devToolsFlexibleLayout: DevToolsFlexibleLayout,
   deviceBoundSessionsDebugging: DeviceBoundSessionsDebugging,
   devToolsEnableDurableMessages: DevToolsEnableDurableMessages,
-  devToolsSourceMapRangeMappings: DevToolsSourceMapRangeMappings,
   devToolsAiAssistanceContextSelectionAgent: HostConfigAiAssistanceContextSelectionAgent,
   devToolsConsoleInsightsTeasers: ConsoleInsightsTeasers,
   devToolsGeminiRebranding: HostConfigGeminiRebranding,

@@ -45,11 +45,11 @@ describe('decodeRangeMappings', () => {
     assert.deepEqual(decodeRangeMappings('AB;AB'), [[0, 1], [0, 1]]);
   });
 
-  it('throws when a relative index is zero', () => {
-    // `invalid-vlq-zero` from the proposal's test suite: a relative offset of 0 after
-    // the initial index would point at the mapping that was already marked.
-    assert.throws(() => decodeRangeMappings('AA'), /zero/);
-    assert.throws(() => decodeRangeMappings('BCA'), /zero/);
+  it('repeats the previous index for a relative index of zero', () => {
+    // The proposal's test suite rejects this as `invalid-vlq-zero`, but a repeated index
+    // only marks the same mapping twice, so it is tolerated.
+    assert.deepEqual(decodeRangeMappings('AA'), [[0, 0]]);
+    assert.deepEqual(decodeRangeMappings('BCA'), [[1, 3, 3]]);
   });
 
   it('throws on a comma separator', () => {

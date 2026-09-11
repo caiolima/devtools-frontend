@@ -5,7 +5,6 @@
 import * as ScopesCodec from '../../third_party/source-map-scopes-codec/source-map-scopes-codec.js';
 import * as Common from '../common/common.js';
 import * as Platform from '../platform/platform.js';
-import * as Root from '../root/root.js';
 import * as TextUtils from '../text_utils/text_utils.js';
 
 import type {CallFrame, ScopeChainEntry} from './DebuggerModel.js';
@@ -592,9 +591,7 @@ export class SourceMap {
                                    sourceColumnNumber, names[nameIndex]));
     }
 
-    if (Root.Runtime.hostConfig.devToolsSourceMapRangeMappings?.enabled) {
-      this.#markRangeMappings(map, lineStarts, lineCounts);
-    }
+    this.#markRangeMappings(map, lineStarts, lineCounts);
 
     if (!this.#scopesInfo) {
       this.#scopesInfo = new SourceMapScopesInfo(this, {scopes: [], ranges: []});
@@ -618,32 +615,35 @@ export class SourceMap {
    * Marks the entries of the section that was just parsed which the `rangeMappings` field of
    * that section points at.
    *
-   * A malformed field is a hard failure and invalidates the SourceMap, so the field is only
-   * looked at when the feature is enabled.
+   * A malformed field never invalidates the SourceMap: a field that can't be decoded is
+   * ignored altogether, and indices that don't point at a mapping with an original position
+   * are skipped.
    *
    * @param lineStarts index in `mappings` of the first entry of each line of the section.
    * @param lineCounts number of entries on each line of the section.
    */
   #markRangeMappings(map: SourceMapV3Object, lineStarts: number[], lineCounts: number[]): void {
-    if (map.rangeMappings === undefined) {
+    if (typeof map.rangeMappings !== 'string') {
       return;
     }
-    const mappings = this.mappings();
-    if (typeof map.rangeMappings !== 'string') {
-      throw new Error('must be a string');
+    let rangeMappings: number[][];
+    try {
+      rangeMappings = decodeRangeMappings(map.rangeMappings);
+    } catch {
+      return;
     }
-    const rangeMappings = decodeRangeMappings(map.rangeMappings);
 
+    const mappings = this.mappings();
     for (let line = 0; line < rangeMappings.length; ++line) {
       for (const index of rangeMappings[line]) {
         if (index >= (lineCounts[line] ?? 0)) {
-          throw new Error(`index ${index} exceeds the mappings of generated line ${line}`);
+          // The indices are sorted, so the rest of the line is out of bounds as well.
+          break;
         }
-        if (mappings[lineStarts[line] + index].sourceURL === undefined) {
-          throw new Error(`index ${index} of generated line ${line} has no original position`);
-        }
-
         const mappingIndex = lineStarts[line] + index;
+        if (mappings[mappingIndex].sourceURL === undefined) {
+          continue;
+        }
         mappings[mappingIndex] = asRangeMapping(mappings[mappingIndex]);
       }
     }

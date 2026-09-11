@@ -10,12 +10,13 @@ import {TokenIterator} from './SourceMap.js';
  * The field holds one entry per line of the generated code, separated by `;`. Each line is
  * a bare sequence of unsigned Base64 VLQs (no separators in between) denoting which of the
  * mappings on that line are range mappings: the first VLQ is an absolute index into the
- * line's mappings, every subsequent one a strictly positive offset from the previous index.
+ * line's mappings, every subsequent one an offset from the previous index. An offset of zero
+ * repeats the previous index, which is tolerated rather than treated as an error.
  *
  * Whether those indices actually exist cannot be decided here — that requires the decoded
  * `mappings` — so this only validates the encoding itself.
  *
- * @returns for every line of the generated code, the ascending indices of the mappings on
+ * @returns for every line of the generated code, the sorted indices of the mappings on
  *          that line which are range mappings.
  * @throws if the field is not a well-formed sequence of unsigned VLQs and `;` separators.
  * @see https://github.com/tc39/source-map/blob/main/proposals/range-mappings.md
@@ -33,17 +34,9 @@ export function decodeRangeMappings(encodedRangeMappings: string): number[][] {
       continue;
     }
 
-    const value = tokenIter.nextUnsignedVLQ();
-    const previousIndex = indices.at(-1);
-    if (previousIndex === undefined) {
-      indices.push(value);
-    } else {
-      if (value === 0) {
-        // A relative offset of zero would point at the mapping that was already marked.
-        throw new Error('Relative range mapping index must not be zero');
-      }
-      indices.push(previousIndex + value);
-    }
+    // The first index of a line is absolute, i.e. relative to 0.
+    const previousIndex = indices.at(-1) ?? 0;
+    indices.push(previousIndex + tokenIter.nextUnsignedVLQ());
   }
   rangeMappings.push(indices);
 
