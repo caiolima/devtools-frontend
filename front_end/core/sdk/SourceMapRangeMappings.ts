@@ -13,9 +13,6 @@ import {TokenIterator} from './SourceMap.js';
  * line's mappings, every subsequent one an offset from the previous index. An offset of zero
  * repeats the previous index, which is tolerated rather than treated as an error.
  *
- * Whether those indices actually exist cannot be decided here — that requires the decoded
- * `mappings` — so this only validates the encoding itself.
- *
  * @returns for every line of the generated code, the sorted indices of the mappings on
  *          that line which are range mappings.
  * @throws if the field is not a well-formed sequence of unsigned VLQs and `;` separators.
