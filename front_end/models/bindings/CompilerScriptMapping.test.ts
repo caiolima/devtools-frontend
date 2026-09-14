@@ -426,6 +426,19 @@ describe('CompilerScriptMapping', () => {
       assert.deepEqual(await debuggerWorkspaceBinding.uiLocationToRawLocations(uiSourceCode, 9, 0),
                        [script.debuggerModel.createRawLocation(script, 3, 0)]);
     });
+
+    it('maps a covered ui location range to the matching raw location range', async () => {
+      const target = backend.createTarget();
+      const {uiSourceCode, script} = await addScriptWithRangeMapping(target);
+
+      const ranges = await debuggerWorkspaceBinding.uiLocationRangeToRawLocationRanges(
+          uiSourceCode, new TextUtils.TextRange.TextRange(1, 0, 1, 2));
+
+      assert.deepEqual(ranges, [{
+                         start: script.debuggerModel.createRawLocation(script, 1, 0),
+                         end: script.debuggerModel.createRawLocation(script, 1, 2),
+                       }]);
+    });
   });
 
   it('correctly maps to multiple raw locations if the source map has multiple entries for a single source line/column',

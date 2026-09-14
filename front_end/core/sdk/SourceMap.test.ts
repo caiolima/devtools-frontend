@@ -1757,6 +1757,24 @@ describeWithEnvironment('SourceMap', () => {
                            [new TextUtils.TextRange.TextRange(2, 6, 2 ** 31 - 1, 2 ** 31 - 1)]);
         });
       });
+
+      describe('reverseMapTextRanges', () => {
+        it('maps the intersection with a range mapping', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assert.deepEqual(
+              sourceMap.reverseMapTextRanges(sourceUrlExample, new TextUtils.TextRange.TextRange(2, 0, 2, 3)),
+              [new TextUtils.TextRange.TextRange(1, 0, 1, 3)]);
+        });
+
+        it('clips the queried range to what the range mapping covers', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assert.deepEqual(
+              sourceMap.reverseMapTextRanges(sourceUrlExample, new TextUtils.TextRange.TextRange(0, 0, 2, 1)),
+              [new TextUtils.TextRange.TextRange(0, 4, 1, 1)]);
+        });
+      });
     });
 
     describe('malformed input', () => {
