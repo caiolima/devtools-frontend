@@ -1656,6 +1656,29 @@ describeWithEnvironment('SourceMap', () => {
         ]));
       }
 
+      describe('rangeMappedSourceRanges', () => {
+        it('reports the original text a range mapping covers', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assert.deepEqual(sourceMap.rangeMappedSourceRanges(sourceUrlExample),
+                           [new TextUtils.TextRange.TextRange(1, 2, 3, 6)]);
+        });
+
+        it('reports an unbounded end for a trailing range mapping', () => {
+          const sourceMap = createSourceMap(encodeSourceMap(['0:0 => example.js:3:1 (range)']));
+
+          assert.deepEqual(sourceMap.rangeMappedSourceRanges(sourceUrlExample),
+                           [new TextUtils.TextRange.TextRange(3, 1, SDK.SourceMap.UNBOUNDED, SDK.SourceMap.UNBOUNDED)]);
+        });
+
+        it('is empty for sources without range mappings', () => {
+          const sourceMap = createSourceMap(encodeSourceMap(['0:0 => example.js:0:0']));
+
+          assert.isEmpty(sourceMap.rangeMappedSourceRanges(sourceUrlExample));
+          assert.isEmpty(sourceMap.rangeMappedSourceRanges(sourceUrlOther));
+        });
+      });
+
       describe('sourceLineMapping', () => {
         it('resolves a line in the middle of a range mapping', () => {
           const sourceMap = createSourceMapWithRangeOverLines();

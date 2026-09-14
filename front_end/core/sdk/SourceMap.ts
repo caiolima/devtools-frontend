@@ -576,6 +576,19 @@ export class SourceMap {
     return ranges;
   }
 
+  /**
+   * @returns the ranges of the source identified by the {@link sourceURL} that are covered by
+   *          a range mapping, considered `[start,end[`. A range mapping that reaches until the
+   *          end of the generated code ends at {@link UNBOUNDED}, as the length of the original
+   *          source is not necessarily known.
+   */
+  rangeMappedSourceRanges(sourceURL: Platform.DevToolsPath.UrlString): TextUtils.TextRange.TextRange[] {
+    this.#ensureSourceMapProcessed();
+    const records = this.#sourceInfoByURL.get(sourceURL)?.rangeMappings ?? [];
+    return records.map(record => new TextUtils.TextRange.TextRange(record.startLine, record.startColumn, record.endLine,
+                                                                   record.endColumn));
+  }
+
   mappings(): SourceMapEntry[] {
     this.#ensureSourceMapProcessed();
     return this.#mappings ?? [];

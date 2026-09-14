@@ -427,6 +427,33 @@ describe('CompilerScriptMapping', () => {
                        [script.debuggerModel.createRawLocation(script, 3, 0)]);
     });
 
+    it('reports every covered line as source-mapped', async () => {
+      const target = backend.createTarget();
+      const {uiSourceCode} = await addScriptWithRangeMapping(target);
+
+      assert.deepEqual(await debuggerWorkspaceBinding.getMappedLines(uiSourceCode), new Set([0, 1, 2, 9]));
+    });
+
+    it('reports the rest of the original source as mapped for a trailing range mapping', async () => {
+      const target = backend.createTarget();
+      const scriptInfo = {url: `${sourceRoot}/trailing.out.js`, content: 'a;\nb;\nc;\n'};
+      const sourceMapInfo = {
+        url: `${scriptInfo.url}.map`,
+        content: {
+          // A range mapping with no following entry has no known end, so how far it reaches
+          // can only be told from the embedded original source.
+          ...encodeSourceMap(['0:0 => trailing.ts:1:0 (range)'], sourceRoot),
+          sourcesContent: ['line0\nline1\nline2\nline3\n'],
+        },
+      };
+      const [uiSourceCode] = await Promise.all([
+        waitForUISourceCodeAdded(`${sourceRoot}/trailing.ts`, target),
+        backend.addScript(target, scriptInfo, sourceMapInfo),
+      ]);
+
+      assert.deepEqual(await debuggerWorkspaceBinding.getMappedLines(uiSourceCode), new Set([1, 2, 3, 4]));
+    });
+
     it('maps a covered ui location range to the matching raw location range', async () => {
       const target = backend.createTarget();
       const {uiSourceCode, script} = await addScriptWithRangeMapping(target);
