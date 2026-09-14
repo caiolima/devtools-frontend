@@ -1818,6 +1818,48 @@ describe('SourceMap', () => {
                            [new TextUtils.TextRange.TextRange(2, 6, 2 ** 31 - 1, 2 ** 31 - 1)]);
         });
       });
+
+      describe('reverseMapTextRanges', () => {
+        it('maps the intersection with a range mapping', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assert.deepEqual(
+              sourceMap.reverseMapTextRanges(sourceUrlExample, new TextUtils.TextRange.TextRange(2, 0, 2, 3)),
+              [new TextUtils.TextRange.TextRange(1, 0, 1, 3)]);
+        });
+
+        it('clips the queried range to what the range mapping covers', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          assert.deepEqual(
+              sourceMap.reverseMapTextRanges(sourceUrlExample, new TextUtils.TextRange.TextRange(0, 0, 2, 1)),
+              [new TextUtils.TextRange.TextRange(0, 4, 1, 1)]);
+        });
+
+        it('combines the intersection with the regular mappings the queried range also overlaps', () => {
+          const sourceMap = createSourceMapWithRangeOverLines();
+
+          // The range mapping maps 2:0 up to 3:6 onto 1:0 up to 2:6, which is where the regular
+          // mapping for 9:0 starts, so the two are merged.
+          assert.deepEqual(
+              sourceMap.reverseMapTextRanges(sourceUrlExample, new TextUtils.TextRange.TextRange(2, 0, 9, 5)),
+              [new TextUtils.TextRange.TextRange(1, 0, 2 ** 31 - 1, 2 ** 31 - 1)]);
+        });
+
+        it('ends the combined range where the mapping after the overlapped regular mapping starts', () => {
+          const sourceMap = createSourceMap(encodeSourceMap([
+            '0:4 => example.js:1:2 (range)',
+            '2:6 => example.js:9:0',
+            '4:0 => example.js:12:0',
+          ]));
+
+          // The regular mapping for 9:0 spans 2:6 up to 4:0, and the mapping for 12:0 is not
+          // part of the queried range.
+          assert.deepEqual(
+              sourceMap.reverseMapTextRanges(sourceUrlExample, new TextUtils.TextRange.TextRange(2, 0, 9, 5)),
+              [new TextUtils.TextRange.TextRange(1, 0, 4, 0)]);
+        });
+      });
     });
 
     describe('malformed input', () => {
