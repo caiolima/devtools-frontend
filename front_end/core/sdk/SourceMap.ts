@@ -923,7 +923,7 @@ export class TokenIterator {
     let digit: number = VLQ_CONTINUATION_MASK;
     while (digit & VLQ_CONTINUATION_MASK) {
       if (!this.hasNext()) {
-        throw new Error('Unexpected end of input while decodling VLQ number!');
+        throw new Error('Unexpected end of input while decoding VLQ number!');
       }
       if (unsigned && shift > VLQ_UNSIGNED_MAX_SHIFT) {
         throw new Error('Unsigned VLQ number does not fit into 32 bits!');

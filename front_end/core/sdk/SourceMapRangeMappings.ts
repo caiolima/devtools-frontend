@@ -23,17 +23,19 @@ export function decodeRangeMappings(encodedRangeMappings: string): number[][] {
   const tokenIter = new TokenIterator(encodedRangeMappings);
 
   let indices: number[] = [];
+  let currentIndex = 0;
   while (tokenIter.hasNext()) {
     if (tokenIter.peek() === ';') {
       tokenIter.next();
       rangeMappings.push(indices);
       indices = [];
+      currentIndex = 0;
       continue;
     }
 
     // The first index of a line is absolute, i.e. relative to 0.
-    const previousIndex = indices.at(-1) ?? 0;
-    indices.push(previousIndex + tokenIter.nextUnsignedVLQ());
+    currentIndex += tokenIter.nextUnsignedVLQ();
+    indices.push(currentIndex);
   }
   rangeMappings.push(indices);
 

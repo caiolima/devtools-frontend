@@ -9,19 +9,14 @@ const base64Digits = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345
 export function encodeUnsignedVlq(n: number): string {
   // Encode into a base64 run.
   let result = '';
-  while (true) {
+  do {
     // Extract the lowest 5 bits and remove them from the number.
     const digit = n & 0x1f;
     n >>>= 5;
-    // Is there anything more left to encode?
-    if (n === 0) {
-      // We are done encoding, finish the run.
-      result += base64Digits[digit];
-      break;
-    }
-    // There is still more to encode, so add the digit and the continuation bit.
-    result += base64Digits[0x20 + digit];
-  }
+    // If there's nothing left to, we are done encoding and we get base64Digits[digit].
+    // Otherwise add the digit and the continuation bit base64Digits[0x20 + digit]
+    result += base64Digits[n === 0 ? digit : 0x20 + digit];
+  } while (n > 0);
   return result;
 }
 
