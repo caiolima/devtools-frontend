@@ -133,15 +133,6 @@ export class SourceMapEntry {
   }
 }
 
-/**
- * Source maps don't contain end positions for entries, but each entry is assumed to span
- * until the following entry. This doesn't work however in case of the last entry, where
- * there's no following entry. We also don't know the number of lines and columns in the
- * original source code (which might not be available at all), so for that case we use the
- * maximum signed 32-bit integer, which is definitely going to be larger than any script we
- * can process and can safely be serialized as part of the skip list we send to V8 with
- * `Debugger.stepOver` (http://crbug.com/1305956).
- */
 export const UNBOUNDED: number = 2 ** 31 - 1;
 
 interface RangeMappingRecord {
@@ -418,10 +409,10 @@ export class SourceMap {
         break;
       }
       if (comparePositions(lineNumber, columnNumber, record.endLine, record.endColumn) < 0) {
-        covering.push(record);
+        covering.unshift(record);
       }
     }
-    return covering.reverse();
+    return covering;
   }
 
   /**
@@ -533,6 +524,13 @@ export class SourceMap {
         ++i;
       }
 
+      // Source maps don't contain end positions for entries, but each entry is assumed to
+      // span until the following entry. This doesn't work however in case of the last
+      // entry, where there's no following entry. We also don't know the number of lines
+      // and columns in the original source code (which might not be available at all), so
+      // for that case we store the maximum signed 32-bit integer, which is definitely going
+      // to be larger than any script we can process and can safely be serialized as part of
+      // the skip list we send to V8 with `Debugger.stepOver` (http://crbug.com/1305956).
       const startLine = mappings[startIndex].lineNumber;
       const startColumn = mappings[startIndex].columnNumber;
       const endLine = endIndex < mappings.length ? mappings[endIndex].lineNumber : UNBOUNDED;
@@ -599,6 +597,7 @@ export class SourceMap {
       this.mappings().sort(SourceMapEntry.compare);
 
       this.#computeReverseMappings(this.#mappings);
+      this.#computeRangeMappingRecords(this.#mappings);
     }
 
     if (!SourceMap.retainRawSourceMaps) {
@@ -608,10 +607,8 @@ export class SourceMap {
 
   #computeReverseMappings(mappings: SourceMapEntry[]): void {
     const reverseMappingsPerUrl = new Map<Platform.DevToolsPath.UrlString, number[]>();
-    const rangeMappingsPerUrl = new Map<Platform.DevToolsPath.UrlString, RangeMappingRecord[]>();
     for (let i = 0; i < mappings.length; i++) {
-      const entry = mappings[i];
-      const entryUrl = entry?.sourceURL;
+      const entryUrl = mappings[i]?.sourceURL;
       if (!entryUrl) {
         continue;
       }
@@ -621,26 +618,6 @@ export class SourceMap {
         reverseMappingsPerUrl.set(entryUrl, reverseMap);
       }
       reverseMap.push(i);
-
-      if (entry.isRangeMapping) {
-        const next = mappings[i + 1];
-        const end = next ? interpolateOriginalPosition(entry, next.lineNumber, next.columnNumber) :
-                           {lineNumber: UNBOUNDED, columnNumber: UNBOUNDED};
-        let records = rangeMappingsPerUrl.get(entryUrl);
-        if (!records) {
-          records = [];
-          rangeMappingsPerUrl.set(entryUrl, records);
-        }
-        records.push({
-          mappingIndex: i,
-          startLine: entry.sourceLineNumber,
-          startColumn: entry.sourceColumnNumber,
-          endLine: end.lineNumber,
-          endColumn: end.columnNumber,
-          maxEndLine: end.lineNumber,
-          maxEndColumn: end.columnNumber,
-        });
-      }
     }
 
     for (const [url, reverseMap] of reverseMappingsPerUrl.entries()) {
@@ -650,6 +627,46 @@ export class SourceMap {
       }
       reverseMap.sort(sourceMappingComparator);
       info.reverseMappings = reverseMap;
+    }
+
+    function sourceMappingComparator(indexA: number, indexB: number): number {
+      const a = mappings[indexA];
+      const b = mappings[indexB];
+      return a.sourceLineNumber - b.sourceLineNumber || a.sourceColumnNumber - b.sourceColumnNumber ||
+          a.lineNumber - b.lineNumber || a.columnNumber - b.columnNumber;
+    }
+  }
+
+  /**
+   * Builds, per source, the {@link RangeMappingRecord}s of the range mappings covering that
+   * source, ordered by original start position. Expects `mappings` to be sorted by generated
+   * position, since a range mapping extends until the next generated entry.
+   */
+  #computeRangeMappingRecords(mappings: SourceMapEntry[]): void {
+    const rangeMappingsPerUrl = new Map<Platform.DevToolsPath.UrlString, RangeMappingRecord[]>();
+    for (let i = 0; i < mappings.length; i++) {
+      const entry = mappings[i];
+      const entryUrl = entry?.sourceURL;
+      if (!entryUrl || !entry.isRangeMapping) {
+        continue;
+      }
+      const next = mappings[i + 1];
+      const end = next ? interpolateOriginalPosition(entry, next.lineNumber, next.columnNumber) :
+                         {lineNumber: UNBOUNDED, columnNumber: UNBOUNDED};
+      let records = rangeMappingsPerUrl.get(entryUrl);
+      if (!records) {
+        records = [];
+        rangeMappingsPerUrl.set(entryUrl, records);
+      }
+      records.push({
+        mappingIndex: i,
+        startLine: entry.sourceLineNumber,
+        startColumn: entry.sourceColumnNumber,
+        endLine: end.lineNumber,
+        endColumn: end.columnNumber,
+        maxEndLine: end.lineNumber,
+        maxEndColumn: end.columnNumber,
+      });
     }
 
     for (const [url, records] of rangeMappingsPerUrl.entries()) {
@@ -669,13 +686,6 @@ export class SourceMap {
         record.maxEndColumn = maxEndColumn;
       }
       info.rangeMappings = records;
-    }
-
-    function sourceMappingComparator(indexA: number, indexB: number): number {
-      const a = mappings[indexA];
-      const b = mappings[indexB];
-      return a.sourceLineNumber - b.sourceLineNumber || a.sourceColumnNumber - b.sourceColumnNumber ||
-          a.lineNumber - b.lineNumber || a.columnNumber - b.columnNumber;
     }
   }
 
