@@ -135,7 +135,24 @@ export class SourceMapEntry {
 
 export const UNBOUNDED: number = 2 ** 31 - 1;
 
+/**
+ * The original text covered by a single range mapping, used by the reverse (original to
+ * generated) lookups.
+ *
+ * A range mapping maps every position from its entry up to the next generated entry, but the
+ * source map only stores where it starts. Its end in the original source is never written
+ * down and has to be interpolated from the next generated entry. The reverse index
+ * ({@link SourceInfo.reverseMappings}) only knows where entries start, so on its own it can't
+ * tell whether an original position falls inside a range mapping.
+ *
+ * Each record holds the original start and the interpolated end of one range mapping, so
+ * lookups don't have to interpolate again on every query. The records of a source are sorted
+ * by start position and carry the running maximum end, so the range mappings covering a
+ * position can be found with a binary search plus a short backwards scan, without walking
+ * every mapping.
+ */
 interface RangeMappingRecord {
+  /** Index of the range mapping's entry in {@link SourceMap.mappings}. */
   mappingIndex: number;
   // Those are cache to avoid recalculating the interpolation
   // every time we need such kind of information.
@@ -174,6 +191,7 @@ export class SourceMap {
   readonly #sourceMappingURL: Platform.DevToolsPath.UrlString;
   readonly #baseURL: Platform.DevToolsPath.UrlString;
   #mappings: SourceMapEntry[]|null = null;
+  #hasRangeMappings = false;
 
   readonly #sourceInfos: SourceInfo[] = [];
   readonly #sourceInfoByURL = new Map<Platform.DevToolsPath.UrlString, SourceInfo>();
@@ -597,7 +615,9 @@ export class SourceMap {
       this.mappings().sort(SourceMapEntry.compare);
 
       this.#computeReverseMappings(this.#mappings);
-      this.#computeRangeMappingRecords(this.#mappings);
+      if (this.#hasRangeMappings) {
+        this.#computeRangeMappingRecords(this.#mappings);
+      }
     }
 
     if (!SourceMap.retainRawSourceMaps) {
@@ -860,6 +880,7 @@ export class SourceMap {
           continue;
         }
         mappings[mappingIndex] = asRangeMapping(mappings[mappingIndex]);
+        this.#hasRangeMappings = true;
       }
     }
   }
